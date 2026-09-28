@@ -4,7 +4,7 @@
 Runs from the folder that holds qemu-system-ppc; machines live in a
 "Machines" folder next to it. Standard library only (tkinter).
 
-    python mac99_gui.py
+    python g5_gui.py
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def main(argv=None, report_problem=None) -> int:
         report(NO_TKINTER)
         return EXIT_NO_TKINTER
 
-    from qemugui.mac99_ui_main import MainWindow
+    from qemugui.g5_ui_main import MainWindow
     settings_file = paths.settings_path()
     app = MainWindow(paths.Settings.load(settings_file), settings_file)
     app.mainloop()

@@ -286,7 +286,7 @@ SHARE_DEFAULT_USER = "guest"
 @dataclass
 class Share:
     """One host folder, offered to the guest over FTP while it runs -- see
-    mac99_share.py. Ported from the g3beige GUI's own shared folder."""
+    g5_share.py. Ported from the g3beige GUI's own shared folder."""
     folder: str = ""             # "" = no shared folder
     user: str = SHARE_DEFAULT_USER
     password: str = ""

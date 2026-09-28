@@ -14,7 +14,7 @@ same folder as `qemu-system-ppc` (and `qemu-img`, `pc-bios/`).
 
 ## Run from source
 
-    python mac99_gui.py
+    python g5_gui.py
 
 ## Shared folder
 
@@ -30,16 +30,16 @@ is arch-specific and has no tkinter; Apple's `/usr/bin/python3` is arm64e
 and not redistributable):
 
     /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
-        -m PyInstaller --noconfirm Mac99GUI.spec
+        -m PyInstaller --noconfirm G5GUI.spec
 
 Result: `dist/Qemu-system-ppc Mac99 openbios GUI.app`. Put it in the
 distribution folder that holds `qemu-system-ppc` and `pc-bios/`.
 
 ## Build on Windows
 
-    pyinstaller --noconfirm Mac99GUI.spec
+    pyinstaller --noconfirm G5GUI.spec
 
-`Mac99GUI.spec` targets `universal2` only on macOS; on Windows it produces
+`G5GUI.spec` targets `universal2` only on macOS; on Windows it produces
 a single windowed executable, `dist/Qemu-system-ppc Mac99 openbios GUI.exe`.
 Put it alongside `qemu-system-ppc.exe`.
 

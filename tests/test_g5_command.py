@@ -1,4 +1,4 @@
-"""Golden-output tests for qemugui.mac99_command / qemugui.mac99_model
+"""Golden-output tests for qemugui.g5_command / qemugui.g5_model
 (headless, no Tk).
 
 Run:  python -m unittest discover -s tests
@@ -18,10 +18,10 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from qemugui import mac99_command as command  # noqa: E402
-from qemugui import mac99_model as model  # noqa: E402
+from qemugui import g5_command as command  # noqa: E402
+from qemugui import g5_model as model  # noqa: E402
 from qemugui import paths  # noqa: E402
-from qemugui.mac99_model import Machine, AtaDrive, UsbStorage, Gpu, Network, PromEnv  # noqa: E402
+from qemugui.g5_model import Machine, AtaDrive, UsbStorage, Gpu, Network, PromEnv  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
 
@@ -38,7 +38,7 @@ FIXTURE_QEMU_DIR = {
 #    nothing to attach to (has_adb() is False for "pmu").
 #  * this GUI always wires a persistent nvram.img (macio-nvram.drive=nvr +
 #    the paired -drive), which the reference line does not do -- mac99's
-#    NVRAM is otherwise volatile (see mac99_model.py's module docstring).
+#    NVRAM is otherwise volatile (see g5_model.py's module docstring).
 #  * the reference line carries no explicit -nic at all, relying on QEMU's
 #    own default NIC (mc->default_nic = "sungem", added automatically
 #    because neither -nic nor -net none was given); this GUI is explicit
@@ -204,8 +204,8 @@ class Options(unittest.TestCase):
     def test_no_scsi_no_floppy_options_exist(self):
         """There is nothing in this module that could emit either: the
         machine has neither (see the module docstring's ground truth)."""
-        src = (HERE.parent / "qemugui" / "mac99_command.py").read_text()
-        src_model = (HERE.parent / "qemugui" / "mac99_model.py").read_text()
+        src = (HERE.parent / "qemugui" / "g5_command.py").read_text()
+        src_model = (HERE.parent / "qemugui" / "g5_model.py").read_text()
         for gone in ("scsi-hd", "scsi-cd", "swim3", "SCSI_IDS", "Floppy"):
             self.assertNotIn(gone, src)
             self.assertNotIn(gone, src_model)
@@ -325,7 +325,7 @@ class Options(unittest.TestCase):
         the option was removed rather than shipped unused (user review,
         2026-09-14)."""
         self.assertFalse(hasattr(Machine(), "firmware"))
-        src = (HERE.parent / "qemugui" / "mac99_command.py").read_text()
+        src = (HERE.parent / "qemugui" / "g5_command.py").read_text()
         self.assertNotIn('"-bios"', src)          # "pc-bios" itself stays
 
     def test_comma_in_path_is_escaped_for_qemu(self):
@@ -677,7 +677,7 @@ class NothingIsChosenForYou(unittest.TestCase):
 
     def test_there_is_no_system_type_left(self):
         self.assertFalse(hasattr(Machine(), "system"))
-        src = (HERE.parent / "qemugui" / "mac99_ui_machine.py").read_text()
+        src = (HERE.parent / "qemugui" / "g5_ui_machine.py").read_text()
         for gone in ("System:", "system_var", "_system_chosen"):
             self.assertNotIn(gone, src, gone)
 

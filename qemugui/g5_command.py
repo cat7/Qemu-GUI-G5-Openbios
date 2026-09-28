@@ -3,7 +3,7 @@ run.bat.
 
 Pure: no Tk, no filesystem access beyond string handling. Mirrors
 :mod:`qemugui.command`'s shape (one argv list, two renderings) with a
-different, mac99-specific option set. See ``qemugui/mac99_model.py`` for the
+different, mac99-specific option set. See ``qemugui/g5_model.py`` for the
 ground truth each choice below is based on.
 
 Order follows the user's own reference launcher (verbatim, given
@@ -12,7 +12,7 @@ Order follows the user's own reference launcher (verbatim, given
 [-device ati-rage128-pro,romfile=...] -nic ... -drive ... -prom-env ...``.
 ``-boot c`` there is the disk-boot default (``Machine.boot_slot`` unset);
 ``build_argv`` emits ``-boot d`` instead when the marked slot
-(``model.resolved_boot_kind``) is a CD -- see ``mac99_model.py``'s module
+(``model.resolved_boot_kind``) is a CD -- see ``g5_model.py``'s module
 docstring for what that character actually selects.
 """
 
@@ -21,8 +21,8 @@ from __future__ import annotations
 from . import paths
 from .paths import (qopt, split_extra_args, group_options, bat_quote, drive_format,
                     SUDO_KEEPALIVE)  # re-exported
-from . import mac99_model as model
-from .mac99_model import Machine
+from . import g5_model as model
+from .g5_model import Machine
 
 HEADER_NOTE = "Written by Qemu-system-ppc Mac99 openbios GUI. Do not edit."
 
@@ -93,7 +93,7 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
         argv += ["-display", m.display]
     argv += ["-m", str(int(m.ram_mb))]
     # 'c' tries the "hd" alias, anything else (here 'd') the "cd" one --
-    # see mac99_model.py's module docstring for the alias mechanism.
+    # see g5_model.py's module docstring for the alias mechanism.
     argv += ["-boot", "d" if model.resolved_boot_kind(m) == "cdrom" else "c"]
 
     if m.gpu:
@@ -149,7 +149,7 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     return argv
 
 
-# mac99 has no PRAM file (see mac99_model.py's module docstring): only
+# mac99 has no PRAM file (see g5_model.py's module docstring): only
 # nvram.img is ever chowned back after a sudo run.
 OWNED_SETTINGS_FILES = ("nvram.img",)
 
@@ -183,7 +183,7 @@ def write_launcher(m: Machine, qemu_dir: str, machine_dir: str,
     from pathlib import Path
     import os
     import stat
-    from .mac99_model import ensure_nvram_file
+    from .g5_model import ensure_nvram_file
     ensure_nvram_file(machine_dir)
     argv = build_argv(m, qemu_dir, machine_dir, platform)
     text = render_launcher(argv, platform, needs_sudo(m, platform), extra_count(m, platform),

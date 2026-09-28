@@ -3,7 +3,7 @@ sense is the opposite of the field they write, and the GPU choice's effect
 on one of them.
 
 These build a real (withdrawn) Tk window, so they are skipped where there is
-no working tkinter -- see qemugui/mac99_ui_machine.py for the pure layer
+no working tkinter -- see qemugui/g5_ui_machine.py for the pure layer
 these exercise.
 
 Run:  python -m unittest discover -s tests
@@ -19,9 +19,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from qemugui import mac99_model as model  # noqa: E402
+from qemugui import g5_model as model  # noqa: E402
 from qemugui import paths  # noqa: E402
-from qemugui.mac99_model import Machine, PromEnv, Gpu, AtaDrive, UsbStorage  # noqa: E402
+from qemugui.g5_model import Machine, PromEnv, Gpu, AtaDrive, UsbStorage  # noqa: E402
 
 
 def _tk_available():
@@ -41,7 +41,7 @@ class CheckboxPolarity(unittest.TestCase):
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -126,11 +126,11 @@ class CheckboxPolarity(unittest.TestCase):
 class BootCheckbox(unittest.TestCase):
     """The Drives tab's per-row "Boot" checkbox, mutually exclusive across
     the four ATA rows, which sets ``Machine.boot_slot`` (see
-    mac99_model.py's module docstring)."""
+    g5_model.py's module docstring)."""
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -189,7 +189,7 @@ class NewDiskButton(unittest.TestCase):
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -221,7 +221,7 @@ class NewDiskButton(unittest.TestCase):
         self.assertIsNotNone(ed.new_disk_button)
 
     def test_places_new_disk_in_the_chosen_ata_slot(self):
-        import qemugui.mac99_ui_machine as ui_machine
+        import qemugui.g5_ui_machine as ui_machine
         ed = self._editor(Machine(name="t"))
 
         class FakeDialog:
@@ -237,7 +237,7 @@ class NewDiskButton(unittest.TestCase):
         self.assertEqual(ed.ata_rows[1].kind.get(), "Hard disk")
 
     def test_places_new_disk_as_usb_storage(self):
-        import qemugui.mac99_ui_machine as ui_machine
+        import qemugui.g5_ui_machine as ui_machine
         ed = self._editor(Machine(name="t"))
 
         class FakeDialog:
@@ -252,7 +252,7 @@ class NewDiskButton(unittest.TestCase):
         self.assertEqual(ed.collect().usb_storage, [UsbStorage("/new/stick.img", "raw")])
 
     def test_cancelled_dialog_changes_nothing(self):
-        import qemugui.mac99_ui_machine as ui_machine
+        import qemugui.g5_ui_machine as ui_machine
         ed = self._editor(Machine(name="t", ata=[AtaDrive("disk", "/a.img"), None, None, None]))
 
         class FakeDialog:
@@ -274,7 +274,7 @@ class ShareTab(unittest.TestCase):
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -292,14 +292,14 @@ class ShareTab(unittest.TestCase):
         self.td.cleanup()
 
     def test_defaults_to_no_shared_folder(self):
-        from qemugui.mac99_model import Share
+        from qemugui.g5_model import Share
         ed = self._editor(Machine(name="t"))
         self.assertEqual(ed.share_folder_var.get(), "")
         self.assertEqual(ed.share_scope.get(), "guest-only")
         self.assertEqual(ed.collect().share, Share())
 
     def test_loads_and_collects_a_share(self):
-        from qemugui.mac99_model import Share
+        from qemugui.g5_model import Share
         m = Machine(name="t", share=Share("/shared", "mac", "secret", "all-interfaces"))
         ed = self._editor(m)
         self.assertEqual(ed.share_folder_var.get(), "/shared")
@@ -314,7 +314,7 @@ class UsbAudioCheckbox(unittest.TestCase):
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -364,7 +364,7 @@ class TheNetworkAndSoundTabFollowsTheHost(unittest.TestCase):
 
     def _tab(self, platform: str):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         paths.HOST_PLATFORM = platform
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
@@ -405,7 +405,7 @@ class DateAndTime(unittest.TestCase):
 
     def _editor(self, m: Machine):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         lib = model.Library(self.td.name)
         root = tk.Tk(); root.withdraw()
         self.roots.append(root)
@@ -434,7 +434,7 @@ class DateAndTime(unittest.TestCase):
         self.assertEqual(ed.collect().rtc_base, "2005-04-29T10:30:00")
 
     def test_a_bad_value_is_reported_on_save(self):
-        import qemugui.mac99_ui_machine as ui_machine
+        import qemugui.g5_ui_machine as ui_machine
         ed = self._editor(Machine(name="t"))
         ed.rtc_base_var.set("yesterday")
         shown = []
@@ -454,7 +454,7 @@ class NoSystemChooserOnScreen(unittest.TestCase):
 
     def test_the_machine_tab_has_no_system_widget(self):
         import tkinter as tk
-        from qemugui.mac99_ui_machine import MachineEditor
+        from qemugui.g5_ui_machine import MachineEditor
         with tempfile.TemporaryDirectory() as td:
             lib = model.Library(td)
             m = model.new_machine("t")
@@ -484,7 +484,7 @@ class StartDispatch(unittest.TestCase):
     host the GUI runs the launcher itself and tracks the process."""
 
     def setUp(self):
-        from qemugui import mac99_ui_main as ui
+        from qemugui import g5_ui_main as ui
         self.ui = ui
         self.td = tempfile.TemporaryDirectory()
         paths.use_install_dir(self.td.name)
@@ -533,7 +533,7 @@ class WindowsSpawn(unittest.TestCase):
     .bat runs in a new console with no redirection. Other hosts are untouched."""
 
     def setUp(self):
-        from qemugui import mac99_ui_main as ui
+        from qemugui import g5_ui_main as ui
         self.ui = ui
         self.saved = (paths.HOST_PLATFORM, ui.subprocess.Popen)
         self.td = tempfile.TemporaryDirectory()

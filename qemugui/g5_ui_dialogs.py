@@ -6,7 +6,7 @@ Mirrors :mod:`qemugui.ui_dialogs`'s shape; the difference is what a machine
 folder can hold (no SCSI) and what "reset" means (mac99 has one persisted
 file, ``nvram.img``, no ``pram.img`` -- and unlike g3beige, that file's
 contents are rebuilt from this GUI's own fields at every start regardless,
-see :mod:`qemugui.mac99_model`, so resetting it mainly clears what the
+see :mod:`qemugui.g5_model`, so resetting it mainly clears what the
 running Mac itself wrote there during its last continuous run).
 """
 
@@ -17,7 +17,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox, simpledialog
 
-from . import mac99_model as model
+from . import g5_model as model
 from . import paths
 
 APP_NAME = "Qemu-system-ppc Mac99 openbios GUI"
@@ -73,7 +73,7 @@ def confirm_delete(parent, name: str, will_go: list[str], will_stay: list[str],
 
 def confirm_reset_saved_settings(parent, name: str) -> bool:
     """This machine rebuilds its NVRAM from this GUI's own fields at every
-    start regardless (see mac99_model.py's module docstring), so deleting
+    start regardless (see g5_model.py's module docstring), so deleting
     nvram.img mainly forgets what the Mac itself saved there during its
     last continuous run -- a start-up disk chosen from inside Mac OS, or a
     setenv typed at the Open Firmware prompt. It asks first because those

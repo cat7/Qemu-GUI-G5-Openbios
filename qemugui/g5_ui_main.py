@@ -10,15 +10,15 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, messagebox
 
-from . import mac99_command as command
-from . import mac99_model as model
-from . import mac99_share as share
+from . import g5_command as command
+from . import g5_model as model
+from . import g5_share as share
 from . import paths
-from .mac99_model import Machine, Library
+from .g5_model import Machine, Library
 from .paths import Settings
-from .mac99_ui_dialogs import (ask_name, confirm_delete, confirm_reset_saved_settings, open_folder,
+from .g5_ui_dialogs import (ask_name, confirm_delete, confirm_reset_saved_settings, open_folder,
                                refresh_native_style)
-from .mac99_ui_machine import MachineEditor
+from .g5_ui_machine import MachineEditor
 
 APP_TITLE = "Qemu-system-ppc Mac99 openbios GUI"
 LOG_NAME = "last-run.log"
@@ -399,7 +399,7 @@ class MainWindow(tk.Tk):
 
     def reset_nvram(self):
         """mac99's NVRAM is otherwise volatile; this GUI wires it to a
-        persistent nvram.img (see mac99_command.py), so there is something
+        persistent nvram.img (see g5_command.py), so there is something
         real to reset here, the way g3beige's machines have."""
         name = self.selected_name()
         if not name:

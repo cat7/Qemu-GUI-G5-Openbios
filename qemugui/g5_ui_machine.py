@@ -16,9 +16,9 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 from . import paths
-from . import mac99_model as model
-from .mac99_model import Machine, AtaDrive, Gpu, Network, PromEnv, UsbStorage, Share
-from .mac99_ui_dialogs import show_validation, refresh_native_style, CreateDiskDialog
+from . import g5_model as model
+from .g5_model import Machine, AtaDrive, Gpu, Network, PromEnv, UsbStorage, Share
+from .g5_ui_dialogs import show_validation, refresh_native_style, CreateDiskDialog
 
 KIND_LABELS = {"": "Empty", "disk": "Hard disk", "cdrom": "CD"}
 KIND_BY_LABEL = {v: k for k, v in KIND_LABELS.items()}

@@ -5,7 +5,7 @@
 # working tkinter on both arches --
 #
 #   /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
-#       -m PyInstaller --noconfirm Mac99GUI.spec
+#       -m PyInstaller --noconfirm G5GUI.spec
 #
 # Put the result ("dist/Qemu-system-ppc Mac99 openbios GUI.app" on macOS,
 # the single "dist/Qemu-system-ppc Mac99 openbios GUI.exe" on Windows) into
@@ -19,7 +19,7 @@ import sys
 TARGET_ARCH = 'universal2' if sys.platform == 'darwin' else None
 
 a = Analysis(
-    ['mac99_gui.py'],
+    ['g5_gui.py'],
     pathex=[],
     binaries=[],
     datas=[],

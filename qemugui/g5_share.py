@@ -9,7 +9,7 @@ Ported from :mod:`qemugui.share` (the g3beige GUI's own shared folder,
 branch ``g3-share``); mechanically identical except for one thing that
 does not apply here: that module picks Mac Roman vs UTF-8 filename
 encoding from the g3beige machine's ``system`` profile (a "which Mac OS
-era" choice this machine has none of -- see mac99_model.py's module
+era" choice this machine has none of -- see g5_model.py's module
 docstring, "no governor and no system-type profile"). mac99 guests always
 speak UTF-8 filenames.
 """
@@ -24,7 +24,7 @@ import warnings
 from pathlib import Path
 
 from . import paths
-from .mac99_model import Machine, Share
+from .g5_model import Machine, Share
 
 GUEST_HOST_ADDR = "10.0.2.2"
 PORTS = (21, 2121)

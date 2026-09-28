@@ -3,7 +3,7 @@
 Ported from tests/test_share.py (the g3beige GUI's own shared folder);
 the one thing dropped is the Mac Roman vs UTF-8 encoding test, since
 mac99 machines have no "system era" field to pick it from -- see
-mac99_share.py's module docstring.
+g5_share.py's module docstring.
 
 Run:  python -m unittest discover -s tests
 """
@@ -22,9 +22,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from qemugui import mac99_model as model              # noqa: E402
-from qemugui import mac99_share as share               # noqa: E402
-from qemugui.mac99_model import Machine, Share, Network  # noqa: E402
+from qemugui import g5_model as model              # noqa: E402
+from qemugui import g5_share as share               # noqa: E402
+from qemugui.g5_model import Machine, Share, Network  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
 PASV_RE = re.compile(r"\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)")
@@ -297,7 +297,7 @@ class ServerOnLoopback(unittest.TestCase):
 
     def test_machines_always_speak_utf8(self):
         """No per-guest "system era" field exists on this machine (see
-        mac99_share.py's module docstring) -- unlike the g3beige GUI's
+        g5_share.py's module docstring) -- unlike the g3beige GUI's
         share.py, there is no Mac Roman leg to pick between."""
         s = self.start(self.machine())
         self.assertEqual(s.encoding, "utf8")
