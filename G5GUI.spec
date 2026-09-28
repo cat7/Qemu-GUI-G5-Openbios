@@ -1,22 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Qemu-system-ppc Mac99 openbios GUI.
+# PyInstaller spec for Qemu-system-ppc64 G5 GUI.
 #
-# Build with the python.org universal2 framework Python, which has a
-# working tkinter on both arches --
+# macOS, with the python.org framework Python (it has a working tkinter):
 #
 #   /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
 #       -m PyInstaller --noconfirm G5GUI.spec
 #
-# Put the result ("dist/Qemu-system-ppc Mac99 openbios GUI.app" on macOS,
-# the single "dist/Qemu-system-ppc Mac99 openbios GUI.exe" on Windows) into
-# the distribution folder that holds the qemu-system-ppc binary and
-# pc-bios/. paths.resolve_install_dir walks up out of the .app to find that
-# folder; Machines/ stays beside the application, never inside the
-# (read-only) bundle.
+# The macOS bundle is arm64 unless QEMUGUI_TARGET_ARCH says otherwise
+# (x86_64 or universal2).
+#
+# Put the result ("dist/Qemu-system-ppc64 G5 GUI.app" on macOS, the single
+# "dist/Qemu-system-ppc64 G5 GUI.exe" on Windows) into the folder that holds
+# qemu-system-ppc64, openbios-qemu.elf and pc-bios/. Machines/ is made
+# beside the application, never inside the bundle.
 
+import os
 import sys
 
-TARGET_ARCH = 'universal2' if sys.platform == 'darwin' else None
+NAME = 'Qemu-system-ppc64 G5 GUI'
+TARGET_ARCH = os.environ.get('QEMUGUI_TARGET_ARCH', 'arm64') if sys.platform == 'darwin' else None
 
 a = Analysis(
     ['g5_gui.py'],
@@ -43,7 +45,7 @@ if sys.platform == 'win32':
         a.binaries,
         a.datas,
         [],
-        name='Qemu-system-ppc Mac99 openbios GUI',
+        name=NAME,
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -56,7 +58,7 @@ else:
         a.scripts,
         [],
         exclude_binaries=True,
-        name='Qemu-system-ppc Mac99 openbios GUI',
+        name=NAME,
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,
@@ -72,20 +74,20 @@ else:
         a.datas,
         strip=False,
         upx=False,
-        name='Qemu-system-ppc Mac99 openbios GUI',
+        name=NAME,
     )
     app = BUNDLE(
         coll,
-        name='Qemu-system-ppc Mac99 openbios GUI.app',
+        name=NAME + '.app',
         icon=None,
-        bundle_identifier='org.cat7.qemu-gui-mac99',
+        bundle_identifier='org.cat7.qemu-gui-g5',
         info_plist={
-            'CFBundleName': 'Qemu-system-ppc Mac99 openbios GUI',
-            'CFBundleDisplayName': 'Qemu-system-ppc Mac99 openbios GUI',
+            'CFBundleName': NAME,
+            'CFBundleDisplayName': NAME,
             'CFBundleShortVersionString': '1.0',
             'CFBundleVersion': '1.0',
             'NSHighResolutionCapable': True,
-            'LSMinimumSystemVersion': '10.13',
+            'LSMinimumSystemVersion': '11.0',
             'LSApplicationCategoryType': 'public.app-category.utilities',
             'NSMicrophoneUsageDescription': 'The emulated machine uses the microphone as its audio input.',
         },

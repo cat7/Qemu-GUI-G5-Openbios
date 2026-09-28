@@ -1,16 +1,18 @@
-# Qemu-system-ppc Mac99 openbios GUI
+# Qemu-system-ppc64 G5 GUI
 
-A portable launcher for the OpenBIOS `mac99` machine of the
-`smp-audio-usb` branch of `qemu-system-ppc` (github.com/cat7/qemu).
-OpenBIOS ships with it; no Apple ROM needed. The program must sit in the
-same folder as `qemu-system-ppc` (and `qemu-img`, `pc-bios/`).
+A portable launcher for the Power Mac G5 (PowerMac7,3) machine of
+`qemu-system-ppc64`, branch `powermac73` of github.com/cat7/qemu, with the
+OpenBIOS of branch `powermac73` of github.com/cat7/openbios. The program
+must sit in the same folder as `qemu-system-ppc64`, `openbios-qemu.elf`
+and `pc-bios/` (and `qemu-img` for making new disks). The graphics card
+ROMs (`*.rom`) are picked from that folder.
 
 ## Requirements
 
 - To run from source: Python 3.11+ with tkinter, plus `pyftpdlib` for the
   shared folder (`python -m pip install pyftpdlib`).
-- To build a distributable bundle: PyInstaller, with `pyftpdlib` installed
-  in the same Python.
+- To build a bundle: PyInstaller, with `pyftpdlib` installed in the same
+  Python.
 
 ## Run from source
 
@@ -25,23 +27,20 @@ password, and use the host's own address.
 
 ## Build on macOS
 
-Needs a universal2 python.org framework build of Python (Homebrew's Python
-is arch-specific and has no tkinter; Apple's `/usr/bin/python3` is arm64e
-and not redistributable):
+With the python.org framework Python (Homebrew's Python has no tkinter):
 
     /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
         -m PyInstaller --noconfirm G5GUI.spec
 
-Result: `dist/Qemu-system-ppc Mac99 openbios GUI.app`. Put it in the
-distribution folder that holds `qemu-system-ppc` and `pc-bios/`.
+Result: `dist/Qemu-system-ppc64 G5 GUI.app`, arm64. Set
+`QEMUGUI_TARGET_ARCH=universal2` (or `x86_64`) for another architecture.
 
 ## Build on Windows
 
-    pyinstaller --noconfirm G5GUI.spec
+    py -m PyInstaller --noconfirm G5GUI.spec
 
-`G5GUI.spec` targets `universal2` only on macOS; on Windows it produces
-a single windowed executable, `dist/Qemu-system-ppc Mac99 openbios GUI.exe`.
-Put it alongside `qemu-system-ppc.exe`.
+Result: a single windowed executable, `dist/Qemu-system-ppc64 G5 GUI.exe`.
+Put it alongside `qemu-system-ppc64.exe`.
 
 ## Tests
 
