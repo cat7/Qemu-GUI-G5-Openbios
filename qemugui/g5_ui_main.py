@@ -1,5 +1,5 @@
-"""The mac99 main window: the list of machines, the command line Start will
-run, and Start. Mirrors qemugui/ui_main.py's shape.
+"""The G5 main window: the list of machines, the command line Start will
+run, and Start.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from .g5_ui_dialogs import (ask_name, confirm_delete, confirm_reset_saved_settin
                                refresh_native_style)
 from .g5_ui_machine import MachineEditor
 
-APP_TITLE = "Qemu-system-ppc Mac99 openbios GUI"
+APP_TITLE = paths.APP_NAME
 LOG_NAME = "last-run.log"
 
 # Defined by subprocess only on Windows; named here so the dispatch can be
@@ -398,9 +398,8 @@ class MainWindow(tk.Tk):
             messagebox.showerror(APP_TITLE, f"The start-up file could not be written.\n\n{e}")
 
     def reset_nvram(self):
-        """mac99's NVRAM is otherwise volatile; this GUI wires it to a
-        persistent nvram.img (see g5_command.py), so there is something
-        real to reset here, the way g3beige's machines have."""
+        """Deletes the machine folder's nvram.img, which QEMU keeps there;
+        the next start makes a fresh one."""
         name = self.selected_name()
         if not name:
             return

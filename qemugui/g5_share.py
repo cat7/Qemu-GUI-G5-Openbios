@@ -5,13 +5,7 @@ No Tk in here. Under user (slirp) networking the guest's connection to
 the server runs passive-only and advertises 10.0.2.2 to loopback clients.
 Under vmnet the guest connects to the host's own address instead.
 
-Ported from :mod:`qemugui.share` (the g3beige GUI's own shared folder,
-branch ``g3-share``); mechanically identical except for one thing that
-does not apply here: that module picks Mac Roman vs UTF-8 filename
-encoding from the g3beige machine's ``system`` profile (a "which Mac OS
-era" choice this machine has none of -- see g5_model.py's module
-docstring, "no governor and no system-type profile"). mac99 guests always
-speak UTF-8 filenames.
+Filenames are UTF-8: the G5 runs Mac OS X only.
 """
 
 from __future__ import annotations
@@ -182,7 +176,7 @@ def start_share(m: Machine, log_path: Path | None = None, ports=PORTS,
     Handler.masquerade_address_map = {"127.0.0.1": GUEST_HOST_ADDR}
     Handler.passive_ports = PASSIVE_PORTS
     Handler.encoding = ENCODING
-    Handler.banner = "Qemu-system-ppc Mac99 openbios GUI shared folder"
+    Handler.banner = f"{paths.APP_NAME} shared folder"
 
     host = bind_host if bind_host is not None else _bind_host(share)
     server = None

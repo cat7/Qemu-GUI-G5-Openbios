@@ -1,9 +1,6 @@
 """The shared folder: record, checks, and a real server on loopback.
 
-Ported from tests/test_share.py (the g3beige GUI's own shared folder);
-the one thing dropped is the Mac Roman vs UTF-8 encoding test, since
-mac99 machines have no "system era" field to pick it from -- see
-g5_share.py's module docstring.
+Filenames are always UTF-8 on this machine.
 
 Run:  python -m unittest discover -s tests
 """
@@ -40,14 +37,14 @@ def pasv_endpoint(reply: str) -> tuple[str, int]:
 class ShareRecord(unittest.TestCase):
 
     def test_an_old_record_without_share_loads_with_the_defaults(self):
-        m = Machine.load(FIXTURES / "mac99-osx.json")
-        self.assertNotIn("share", json.loads((FIXTURES / "mac99-osx.json").read_text()))
+        m = Machine.load(FIXTURES / "g5-rv100.json")
+        self.assertNotIn("share", json.loads((FIXTURES / "g5-rv100.json").read_text()))
         self.assertEqual(m.share, Share())
         self.assertEqual(m.share, Share("", "guest", "", "guest-only"))
         self.assertFalse(m.share.enabled)
 
     def test_share_round_trips(self):
-        m = Machine.load(FIXTURES / "mac99-osx.json")
+        m = Machine.load(FIXTURES / "g5-rv100.json")
         m.share = Share("/shared/folder", "mac", "secret", "all-interfaces")
         d = json.loads(m.to_json())
         self.assertEqual(d["share"], {"folder": "/shared/folder", "user": "mac",
@@ -68,7 +65,7 @@ class ShareRecord(unittest.TestCase):
 class ShareChecks(unittest.TestCase):
 
     def machine(self, **kw) -> Machine:
-        m = Machine.load(FIXTURES / "mac99-osx.json")
+        m = Machine.load(FIXTURES / "g5-rv100.json")
         m.share = Share(**kw)
         return m
 
@@ -296,9 +293,6 @@ class ServerOnLoopback(unittest.TestCase):
             share.start_share(self.machine(), ports=(self.port,))
 
     def test_machines_always_speak_utf8(self):
-        """No per-guest "system era" field exists on this machine (see
-        g5_share.py's module docstring) -- unlike the g3beige GUI's
-        share.py, there is no Mac Roman leg to pick between."""
         s = self.start(self.machine())
         self.assertEqual(s.encoding, "utf8")
 

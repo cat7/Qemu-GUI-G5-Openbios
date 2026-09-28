@@ -1,10 +1,7 @@
-"""Tk-backed tests for the mac99 editor: the two checkboxes whose on-screen
-sense is the opposite of the field they write, and the GPU choice's effect
-on one of them.
+"""Tk-backed tests for the G5 editor and main window.
 
 These build a real (withdrawn) Tk window, so they are skipped where there is
-no working tkinter -- see qemugui/g5_ui_machine.py for the pure layer
-these exercise.
+no working tkinter.
 
 Run:  python -m unittest discover -s tests
 """
@@ -21,7 +18,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from qemugui import g5_model as model  # noqa: E402
 from qemugui import paths  # noqa: E402
-from qemugui.g5_model import Machine, PromEnv, Gpu, AtaDrive, UsbStorage  # noqa: E402
+from qemugui.g5_model import Machine, PromEnv, Gpu, Drive  # noqa: E402
 
 
 def _tk_available():
@@ -34,10 +31,8 @@ def _tk_available():
 
 @unittest.skipUnless(_tk_available(), "no display")
 class CheckboxPolarity(unittest.TestCase):
-    """"Boot into Open Firmware" and "Do not load vga driver" ask the
-    opposite question from the field they write (user review, 2026-09-14).
-    Both states of both checkboxes are exercised here, independent of the
-    other and of the record's starting value."""
+    """"Boot into Open Firmware" asks the opposite question from the field
+    it writes."""
 
     def _editor(self, m: Machine):
         import tkinter as tk
@@ -70,18 +65,6 @@ class CheckboxPolarity(unittest.TestCase):
         self.assertTrue(ed.boot_into_ofw_var.get())
         self.assertFalse(ed.collect().prom_env.auto_boot)
 
-    def test_unchecked_no_vga_driver_means_vga_ndrv_true(self):
-        m = Machine(name="t", prom_env=PromEnv(vga_ndrv=True))
-        ed = self._editor(m)
-        self.assertFalse(ed.no_vga_driver_var.get())
-        self.assertTrue(ed.collect().prom_env.vga_ndrv)
-
-    def test_checked_no_vga_driver_means_vga_ndrv_false(self):
-        m = Machine(name="t", prom_env=PromEnv(vga_ndrv=False))
-        ed = self._editor(m)
-        self.assertTrue(ed.no_vga_driver_var.get())
-        self.assertFalse(ed.collect().prom_env.vga_ndrv)
-
     def test_toggling_the_boot_into_ofw_box_flips_the_saved_value(self):
         m = Machine(name="t", prom_env=PromEnv(auto_boot=True))
         ed = self._editor(m)
@@ -90,43 +73,11 @@ class CheckboxPolarity(unittest.TestCase):
         ed.boot_into_ofw_var.set(False)
         self.assertTrue(ed.collect().prom_env.auto_boot)
 
-    def test_turning_the_gpu_on_checks_no_vga_driver(self):
-        """"Make it follow the GPU choice sensibly" (user review,
-        2026-09-14): the Rage 128 Pro needs OpenBIOS's driver kept out of
-        the way, so switching the card on defaults the checkbox to match."""
-        m = Machine(name="t", gpu=None, prom_env=PromEnv(vga_ndrv=True))
-        ed = self._editor(m)
-        self.assertFalse(ed.no_vga_driver_var.get())
-        ed.gpu_on.set(True)
-        ed._gpu_changed()
-        self.assertTrue(ed.no_vga_driver_var.get())
-        self.assertFalse(ed.collect().prom_env.vga_ndrv)
-
-    def test_turning_the_gpu_off_unchecks_no_vga_driver(self):
-        m = Machine(name="t", gpu=Gpu("card.rom"), prom_env=PromEnv(vga_ndrv=False))
-        ed = self._editor(m)
-        self.assertTrue(ed.no_vga_driver_var.get())
-        ed.gpu_on.set(False)
-        ed._gpu_changed()
-        self.assertFalse(ed.no_vga_driver_var.get())
-        self.assertTrue(ed.collect().prom_env.vga_ndrv)
-
-    def test_toggling_the_gpu_does_not_overrule_a_hand_set_checkbox(self):
-        """Only the toggle sets a starting point; a person can still flip
-        the checkbox back afterwards and it stays put."""
-        m = Machine(name="t", gpu=None, prom_env=PromEnv(vga_ndrv=True))
-        ed = self._editor(m)
-        ed.gpu_on.set(True)
-        ed._gpu_changed()
-        ed.no_vga_driver_var.set(False)          # a person overrides it
-        self.assertTrue(ed.collect().prom_env.vga_ndrv)
-
 
 @unittest.skipUnless(_tk_available(), "no display")
 class BootCheckbox(unittest.TestCase):
     """The Drives tab's per-row "Boot" checkbox, mutually exclusive across
-    the four ATA rows, which sets ``Machine.boot_slot`` (see
-    g5_model.py's module docstring)."""
+    the four positions, which sets ``Machine.boot_slot``."""
 
     def _editor(self, m: Machine):
         import tkinter as tk
@@ -150,42 +101,42 @@ class BootCheckbox(unittest.TestCase):
     def test_defaults_to_nothing_checked(self):
         m = Machine(name="t")
         ed = self._editor(m)
-        self.assertFalse(any(row.boot.get() for row in ed.ata_rows))
+        self.assertFalse(any(row.boot.get() for row in ed.drive_rows))
         self.assertIsNone(ed.collect().boot_slot)
 
     def test_loads_the_marked_slot(self):
-        m = Machine(name="t", boot_slot=2,
-                    ata=[AtaDrive("disk", "/a.img"), None, AtaDrive("cdrom", "/c.iso"), None])
+        m = Machine(name="t", boot_slot=1,
+                    drives=[Drive("disk", "/a.img"), Drive("cdrom", "/c.iso"), None, None])
         ed = self._editor(m)
-        self.assertEqual([row.boot.get() for row in ed.ata_rows], [False, False, True, False])
-        self.assertEqual(ed.collect().boot_slot, 2)
-
-    def test_checking_one_row_unchecks_the_others(self):
-        m = Machine(name="t", ata=[AtaDrive("disk", "/a.img"), AtaDrive("disk", "/b.img"), None, None])
-        ed = self._editor(m)
-        ed.ata_rows[0].boot.set(True)
-        ed.ata_rows[0]._boot_toggled()
-        self.assertEqual(ed.collect().boot_slot, 0)
-        ed.ata_rows[1].boot.set(True)
-        ed.ata_rows[1]._boot_toggled()
-        self.assertFalse(ed.ata_rows[0].boot.get())
+        self.assertEqual([row.boot.get() for row in ed.drive_rows], [False, True, False, False])
         self.assertEqual(ed.collect().boot_slot, 1)
 
-    def test_emptying_a_checked_slot_clears_boot(self):
-        m = Machine(name="t", boot_slot=0, ata=[AtaDrive("disk", "/a.img"), None, None, None])
+    def test_checking_one_row_unchecks_the_others(self):
+        m = Machine(name="t", drives=[Drive("disk", "/a.img"), None, Drive("disk", "/b.img"), None])
         ed = self._editor(m)
-        self.assertTrue(ed.ata_rows[0].boot.get())
-        ed.ata_rows[0].kind.set("Empty")
-        ed.ata_rows[0]._kind_changed()
-        self.assertFalse(ed.ata_rows[0].boot.get())
+        ed.drive_rows[0].boot.set(True)
+        ed.drive_rows[0]._boot_toggled()
+        self.assertEqual(ed.collect().boot_slot, 0)
+        ed.drive_rows[2].boot.set(True)
+        ed.drive_rows[2]._boot_toggled()
+        self.assertFalse(ed.drive_rows[0].boot.get())
+        self.assertEqual(ed.collect().boot_slot, 2)
+
+    def test_emptying_a_checked_slot_clears_boot(self):
+        m = Machine(name="t", boot_slot=0, drives=[Drive("disk", "/a.img"), None, None, None])
+        ed = self._editor(m)
+        self.assertTrue(ed.drive_rows[0].boot.get())
+        ed.drive_rows[0].kind.set("Empty")
+        ed.drive_rows[0]._kind_changed()
+        self.assertFalse(ed.drive_rows[0].boot.get())
         self.assertIsNone(ed.collect().boot_slot)
 
 
 @unittest.skipUnless(_tk_available(), "no display")
 class NewDiskButton(unittest.TestCase):
     """The Drives tab's "New disk…" button, offered only when qemu-img
-    sits next to the program (paths.qemu_img_binary), and its wiring of
-    CreateDiskDialog's result back into the editor."""
+    sits next to the program, and its wiring of CreateDiskDialog's result
+    back into the editor."""
 
     def _editor(self, m: Machine):
         import tkinter as tk
@@ -220,40 +171,26 @@ class NewDiskButton(unittest.TestCase):
         ed = self._editor(Machine(name="t"))
         self.assertIsNotNone(ed.new_disk_button)
 
-    def test_places_new_disk_in_the_chosen_ata_slot(self):
+    def test_places_new_disk_in_the_chosen_position(self):
         import qemugui.g5_ui_machine as ui_machine
         ed = self._editor(Machine(name="t"))
 
         class FakeDialog:
             def __init__(self, *_a, **_k):
-                self.result = ("/new/disk.img", "raw", ("ata", 1))
+                self.result = ("/new/disk.img", "raw", model.SATA_B)
 
         orig, ui_machine.CreateDiskDialog = ui_machine.CreateDiskDialog, FakeDialog
         try:
             ed._new_disk()
         finally:
             ui_machine.CreateDiskDialog = orig
-        self.assertEqual(ed.ata_rows[1].file.get(), "/new/disk.img")
-        self.assertEqual(ed.ata_rows[1].kind.get(), "Hard disk")
-
-    def test_places_new_disk_as_usb_storage(self):
-        import qemugui.g5_ui_machine as ui_machine
-        ed = self._editor(Machine(name="t"))
-
-        class FakeDialog:
-            def __init__(self, *_a, **_k):
-                self.result = ("/new/stick.img", "raw", ("usb", None))
-
-        orig, ui_machine.CreateDiskDialog = ui_machine.CreateDiskDialog, FakeDialog
-        try:
-            ed._new_disk()
-        finally:
-            ui_machine.CreateDiskDialog = orig
-        self.assertEqual(ed.collect().usb_storage, [UsbStorage("/new/stick.img", "raw")])
+        self.assertEqual(ed.drive_rows[model.SATA_B].file.get(), "/new/disk.img")
+        self.assertEqual(ed.drive_rows[model.SATA_B].kind.get(), "Hard disk")
+        self.assertEqual(ed.collect().drives[model.SATA_B], Drive("disk", "/new/disk.img", "raw"))
 
     def test_cancelled_dialog_changes_nothing(self):
         import qemugui.g5_ui_machine as ui_machine
-        ed = self._editor(Machine(name="t", ata=[AtaDrive("disk", "/a.img"), None, None, None]))
+        ed = self._editor(Machine(name="t", drives=[Drive("disk", "/a.img"), None, None, None]))
 
         class FakeDialog:
             def __init__(self, *_a, **_k):
@@ -264,8 +201,8 @@ class NewDiskButton(unittest.TestCase):
             ed._new_disk()
         finally:
             ui_machine.CreateDiskDialog = orig
-        self.assertEqual(ed.ata_rows[0].file.get(), "/a.img")
-        self.assertEqual(ed.collect().usb_storage, [])
+        self.assertEqual(ed.drive_rows[0].file.get(), "/a.img")
+        self.assertEqual(ed.collect().drives, [Drive("disk", "/a.img"), None, None, None])
 
 
 @unittest.skipUnless(_tk_available(), "no display")
@@ -346,9 +283,7 @@ class UsbAudioCheckbox(unittest.TestCase):
 
 @unittest.skipUnless(_tk_available(), "no display")
 class TheNetworkAndSoundTabFollowsTheHost(unittest.TestCase):
-    """The Windows build of the G3 GUI showed the Mac's wording and came up
-    with no network (user, 2026-09-22); this editor is built the same way.
-    A new machine opened on either host shows slirp, the host's own
+    """A new machine opened on either host shows slirp, the host's own
     interface label and the host's own sound backend."""
 
     def setUp(self):
@@ -449,8 +384,7 @@ class DateAndTime(unittest.TestCase):
 
 @unittest.skipUnless(_tk_available(), "no display")
 class NoSystemChooserOnScreen(unittest.TestCase):
-    """New machine asks for a name only -- there is no system-type chooser
-    to find or to leave blank (user review, 2026-09-14)."""
+    """New machine asks for a name only."""
 
     def test_the_machine_tab_has_no_system_widget(self):
         import tkinter as tk
@@ -463,6 +397,143 @@ class NoSystemChooserOnScreen(unittest.TestCase):
                 ed = MachineEditor(root, m, lib, "/q", on_save=lambda *a: None)
                 ed.withdraw()
                 self.assertFalse(hasattr(ed, "system_var"))
+            finally:
+                root.destroy()
+
+
+@unittest.skipUnless(_tk_available(), "no display")
+class GraphicsTab(unittest.TestCase):
+
+    def _editor(self, m: Machine, qemu_dir: str = "/q"):
+        import tkinter as tk
+        from qemugui.g5_ui_machine import MachineEditor
+        lib = model.Library(self.td.name)
+        root = tk.Tk(); root.withdraw()
+        self.roots.append(root)
+        ed = MachineEditor(root, m, lib, qemu_dir, on_save=lambda *a: None)
+        ed.withdraw()
+        return ed
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.roots = []
+
+    def tearDown(self):
+        for r in self.roots:
+            r.destroy()
+        self.td.cleanup()
+
+    def test_no_card_by_default(self):
+        ed = self._editor(Machine(name="t"))
+        self.assertIsNone(ed.collect().gpu)
+        self.assertTrue(ed.gl_cb.instate(["disabled"]))
+        self.assertTrue(ed.agp_cb.instate(["disabled"]))
+        self.assertTrue(ed.raster_sb.instate(["disabled"]))
+
+    def test_radeon9800_loads_and_collects(self):
+        gpu = Gpu("radeon9800", "r9800.rom", "fast", 4, "off")
+        ed = self._editor(Machine(name="t", gpu=gpu))
+        self.assertEqual(ed.gpu_model_var.get(), "radeon9800")
+        self.assertTrue(ed.gl_cb.instate(["!disabled"]))
+        self.assertTrue(ed.agp_cb.instate(["disabled"]))
+        self.assertEqual(ed.collect().gpu, gpu)
+
+    def test_switching_to_rv100(self):
+        ed = self._editor(Machine(name="t", gpu=Gpu("radeon9800", "r.rom", "fast", 2)))
+        ed.gpu_model_var.set("rv100")
+        ed._gpu_changed()
+        self.assertTrue(ed.gl_cb.instate(["disabled"]))
+        self.assertTrue(ed.agp_cb.instate(["!disabled"]))
+        ed.agp_var.set(False)
+        self.assertEqual(ed.collect().gpu, Gpu("rv100", "r.rom", "fast", 2, "auto", False))
+        ed.gpu_model_var.set("vga")
+        ed._gpu_changed()
+        self.assertIsNone(ed.collect().gpu)
+
+    def test_bad_raster_threads_is_reported(self):
+        ed = self._editor(Machine(name="t", gpu=Gpu("radeon9800", "r.rom")))
+        ed.raster_var.set("many")
+        errors, _ = model.validate(ed.collect(), None, "darwin", check_files=False)
+        self.assertTrue(any("Raster threads" in e for e in errors), errors)
+
+    def test_the_rom_list_is_the_install_folders_roms(self):
+        with tempfile.TemporaryDirectory() as qd:
+            for n in ("ati_oem_9800xt_123_agp_full.rom", "ati_radeon_7000_208.rom",
+                      "openbios-qemu.elf"):
+                (Path(qd) / n).write_text("")
+            ed = self._editor(Machine(name="t"), qemu_dir=qd)
+            self.assertEqual(list(ed.gpu_rom_cb.cget("values")),
+                             ["ati_oem_9800xt_123_agp_full.rom", "ati_radeon_7000_208.rom"])
+            self.assertEqual(ed.gpu_rom_var.get(), "")
+
+    def test_a_chosen_rom_beside_the_emulator_is_kept_by_name(self):
+        from qemugui.g5_ui_machine import rom_value
+        with tempfile.TemporaryDirectory() as qd:
+            self.assertEqual(rom_value(str(Path(qd) / "card.rom"), qd), "card.rom")
+            self.assertEqual(rom_value("/elsewhere/card.rom", qd), "/elsewhere/card.rom")
+
+
+@unittest.skipUnless(_tk_available(), "no display")
+class DrivePositions(unittest.TestCase):
+
+    def _editor(self, m: Machine):
+        import tkinter as tk
+        from qemugui.g5_ui_machine import MachineEditor
+        lib = model.Library(self.td.name)
+        root = tk.Tk(); root.withdraw()
+        self.roots.append(root)
+        ed = MachineEditor(root, m, lib, "/q", on_save=lambda *a: None)
+        ed.withdraw()
+        return ed
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.roots = []
+
+    def tearDown(self):
+        for r in self.roots:
+            r.destroy()
+        self.td.cleanup()
+
+    def test_each_position_offers_what_its_bus_holds(self):
+        ed = self._editor(Machine(name="t"))
+        got = [list(r.kind_cb.cget("values")) for r in ed.drive_rows]
+        self.assertEqual(got, [["Empty", "Hard disk", "CD"], ["Empty", "CD"],
+                               ["Empty", "Hard disk"], ["Empty", "Hard disk"]])
+
+    def test_a_typed_file_takes_the_kind_its_position_allows(self):
+        ed = self._editor(Machine(name="t"))
+        ed.drive_rows[model.SATA_A].file.set("/images/install.iso")
+        ed.drive_rows[model.ATA_SLAVE].file.set("/images/disk.img")
+        ed.drive_rows[model.ATA_MASTER].file.set("/images/install.iso")
+        drives = ed.collect().drives
+        self.assertEqual(drives[model.SATA_A].kind, "disk")
+        self.assertEqual(drives[model.ATA_SLAVE].kind, "cdrom")
+        self.assertEqual(drives[model.ATA_MASTER].kind, "cdrom")
+
+    def test_round_trip(self):
+        drives = [Drive("cdrom", "/c.iso"), None, Drive("disk", "/a.qcow2", "qcow2"),
+                  Drive("disk", "/b.img")]
+        ed = self._editor(Machine(name="t", drives=drives, boot_slot=2))
+        m = ed.collect()
+        self.assertEqual((m.drives, m.boot_slot), (drives, 2))
+
+
+@unittest.skipUnless(_tk_available(), "no display")
+class UsbTabletCheckbox(unittest.TestCase):
+
+    def test_off_by_default_and_collected(self):
+        import tkinter as tk
+        from qemugui.g5_ui_machine import MachineEditor
+        with tempfile.TemporaryDirectory() as td:
+            root = tk.Tk(); root.withdraw()
+            try:
+                ed = MachineEditor(root, model.new_machine("t"), model.Library(td), "/q",
+                                   on_save=lambda *a: None)
+                ed.withdraw()
+                self.assertFalse(ed.collect().usb_tablet)
+                ed.usb_tablet_var.set(True)
+                self.assertTrue(ed.collect().usb_tablet)
             finally:
                 root.destroy()
 
@@ -574,7 +645,7 @@ class WindowsSpawn(unittest.TestCase):
         run = self._start("linux")
         self.addCleanup(run._log_fh.close)
         argv, kw = self.calls[0]
-        self.assertTrue(str(argv[0]).endswith("qemu-system-ppc"), argv)
+        self.assertTrue(str(argv[0]).endswith("qemu-system-ppc64"), argv)
         self.assertNotIn("creationflags", kw)
         self.assertIsNotNone(kw["stdout"])
 

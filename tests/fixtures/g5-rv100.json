@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "name": "Leopard RV100",
+  "ram_mb": 2048,
+  "smp": 1,
+  "display": "cocoa",
+  "audio": "default",
+  "gpu": {
+    "model": "rv100",
+    "romfile": "ati_radeon_7000_208.rom",
+    "gl": "off",
+    "raster_threads": 1,
+    "async_engine": "auto",
+    "agp": true
+  },
+  "network": {
+    "mode": "user",
+    "mac": "00:05:02:12:34:56"
+  },
+  "drives": [
+    {
+      "kind": "disk",
+      "file": "/images/leopard.img",
+      "format": "raw"
+    },
+    null,
+    null,
+    null
+  ],
+  "prom_env": {
+    "auto_boot": true,
+    "boot_device": "",
+    "boot_args": "-v"
+  },
+  "extra_args": "",
+  "notes": ""
+}

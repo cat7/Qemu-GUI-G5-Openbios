@@ -1,13 +1,9 @@
-"""The small windows for the mac99 editor: the name for a duplicate, the
-delete confirmation, reset NVRAM, and create a disk. A new machine is not one
-of them -- it opens the settings window straight away, on the Machine page.
+"""The small windows for the G5 editor: the name for a duplicate, the
+delete confirmation, Reset NVRAM, and create a disk. A new machine is not
+one of them -- it opens the settings window straight away.
 
-Mirrors :mod:`qemugui.ui_dialogs`'s shape; the difference is what a machine
-folder can hold (no SCSI) and what "reset" means (mac99 has one persisted
-file, ``nvram.img``, no ``pram.img`` -- and unlike g3beige, that file's
-contents are rebuilt from this GUI's own fields at every start regardless,
-see :mod:`qemugui.g5_model`, so resetting it mainly clears what the
-running Mac itself wrote there during its last continuous run).
+Reset NVRAM deletes the machine folder's ``nvram.img`` and nothing else;
+QEMU makes a fresh one at the next start (see :mod:`qemugui.g5_model`).
 """
 
 from __future__ import annotations
@@ -20,7 +16,7 @@ from tkinter import ttk, messagebox, simpledialog
 from . import g5_model as model
 from . import paths
 
-APP_NAME = "Qemu-system-ppc Mac99 openbios GUI"
+APP_NAME = paths.APP_NAME
 DISK_SIZES = ("1", "2", "4", "8", "10", "20")
 
 
@@ -72,12 +68,10 @@ def confirm_delete(parent, name: str, will_go: list[str], will_stay: list[str],
 
 
 def confirm_reset_saved_settings(parent, name: str) -> bool:
-    """This machine rebuilds its NVRAM from this GUI's own fields at every
-    start regardless (see g5_model.py's module docstring), so deleting
-    nvram.img mainly forgets what the Mac itself saved there during its
-    last continuous run -- a start-up disk chosen from inside Mac OS, or a
-    setenv typed at the Open Firmware prompt. It asks first because those
-    are settings a person chose."""
+    """The NVRAM holds what the Mac saved for itself -- the startup disk
+    chosen in Mac OS X, a setenv at the Open Firmware prompt -- so it asks
+    first. The next start makes a fresh NVRAM from the Advanced tab's
+    Open Firmware settings."""
     text = "You are about to delete what this Mac saved for itself last time."
     return messagebox.askyesno("Reset NVRAM", text, icon="warning",
                                default="no", parent=parent)
@@ -100,8 +94,8 @@ def ask_name(parent, title: str, prompt: str, initial: str, existing: list[str])
 
 
 class CreateDiskDialog(simpledialog.Dialog):
-    """Make a new, empty hard disk for this machine and offer it a position:
-    one of the four ATA slots, or a new USB stick.
+    """Make a new, empty hard disk for this machine and offer it a position
+    that takes a hard disk.
 
     Never writes over an existing file: ``model.check_new_image_path`` is the
     guard, and it refuses rather than overwriting.
@@ -112,7 +106,7 @@ class CreateDiskDialog(simpledialog.Dialog):
         self.machine_dir = Path(machine_dir)
         self.qemu_img = paths.qemu_img_binary()
         self.target: Path | None = None
-        self.result = None  # (path, format, placement) placement = ("ata", i) | ("usb", None) | None
+        self.result = None  # (path, format, drive position or None)
         super().__init__(parent, "New hard disk")
 
     def body(self, master):
@@ -134,14 +128,14 @@ class CreateDiskDialog(simpledialog.Dialog):
                      width=8).grid(row=r, column=1, sticky="w", padx=4)
         r += 1
         ttk.Label(master, text="Put it in:").grid(row=r, column=0, sticky="w", padx=4, pady=3)
-        self.choices: list[tuple[str, tuple | None]] = [("Nowhere", None)]
-        for i in range(len(model.ATA_SLOTS)):
-            self.choices.append((f"{model.ata_slot_name(i)} — {self.machine.ata_slot_status(i)}",
-                                 ("ata", i)))
-        self.choices.append(("A new USB stick", ("usb", None)))
-        free = self.machine.first_unfilled_ata()
+        self.choices: list[tuple[str, int | None]] = [("Nowhere", None)]
+        for i in range(len(model.DRIVE_SLOTS)):
+            if "disk" in model.slot_kinds(i):
+                self.choices.append((f"{model.slot_name(i)} — {self.machine.slot_status(i)}", i))
+        free = self.machine.first_unfilled_disk_slot()
         self.place_var = tk.StringVar(
-            value=self.choices[1 + free][0] if free is not None else self.choices[0][0])
+            value=next((c[0] for c in self.choices if c[1] == free and free is not None),
+                       self.choices[0][0]))
         ttk.Combobox(master, textvariable=self.place_var, values=[c[0] for c in self.choices],
                      state="readonly", width=32).grid(row=r, column=1, sticky="w", padx=4)
         r += 1

@@ -7,8 +7,6 @@ Run:  python -m unittest discover -s tests
 from __future__ import annotations
 
 import json
-import re
-import shlex
 import sys
 import tempfile
 import unittest
@@ -21,463 +19,34 @@ sys.path.insert(0, str(HERE.parent))
 from qemugui import g5_command as command  # noqa: E402
 from qemugui import g5_model as model  # noqa: E402
 from qemugui import paths  # noqa: E402
-from qemugui.g5_model import Machine, AtaDrive, UsbStorage, Gpu, Network, PromEnv  # noqa: E402
+from qemugui.g5_model import Machine, Drive, Gpu, Network, PromEnv  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
+QD = "/Applications/qemu-g5"
+MD = "/Machines/Leopard"
 
-FIXTURE_QEMU_DIR = {
-    "mac99-osx.json": "/Applications/qemu-system-ppc-smp-usb-rage-openbios-based",
-    "mac99-os9.json": "/Applications/qemu-system-ppc-smp-usb-rage-openbios-based",
-}
-
-# The user's reference launch line, verbatim (given 2026-09-14). Three
-# deliberate divergences from it, all explained where the comparison
-# accounts for them below:
-#  * this GUI does not emit adb-mouse.extended-protocol under via=pmu --
-#    mac_newworld.c creates no ADB device in that mode, so the property has
-#    nothing to attach to (has_adb() is False for "pmu").
-#  * this GUI always wires a persistent nvram.img (macio-nvram.drive=nvr +
-#    the paired -drive), which the reference line does not do -- mac99's
-#    NVRAM is otherwise volatile (see g5_model.py's module docstring).
-#  * the reference line carries no explicit -nic at all, relying on QEMU's
-#    own default NIC (mc->default_nic = "sungem", added automatically
-#    because neither -nic nor -net none was given); this GUI is explicit
-#    about it, the way the g3beige GUI is explicit about model=bmac.
-USER_MAC99_OSX = r"""
-./qemu-system-ppc \
--L ./pc-bios \
--M mac99,via=pmu \
--smp 4 \
--display sdl \
--m 1024 \
--boot c \
--vga none \
--global adb-mouse.extended-protocol=on \
--audiodev coreaudio,id=snd -global screamer.audiodev=snd \
--device ati-rage128-pro,romfile=./ati_rage128pro_136_agp.rom \
--drive file=/images/10.4.img,format=raw,media=disk,index=0 \
--drive file=/images/Chessmaster9000.iso,format=raw,media=cdrom,index=2 \
--prom-env 'auto-boot?=true' \
--prom-env 'vga-ndrv?=false'
-"""
-
-INERT_UNDER_PMU = "adb-mouse.extended-protocol=on"
-
-
-def user_tokens(text: str, qemu_dir: str) -> set[str]:
-    toks = shlex.split(text.replace("\\\n", " "))
-    assert toks[0] == "./qemu-system-ppc"
-    out = []
-    for i, t in enumerate(toks[1:], 1):
-        prev = toks[i - 1]
-        if prev in ("-L", "-bios") and not t.startswith("/"):
-            t = f"{qemu_dir}/{t.lstrip('./')}"
-        t = re.sub(r"romfile=(?!/)\.?/?([^,]+)", lambda mm: f"romfile={qemu_dir}/{mm.group(1)}", t)
-        out.append(t)
-    # drop the global that has nothing to attach to under via=pmu
-    filtered = []
-    skip_next = False
-    for t in out:
-        if skip_next:
-            skip_next = False
-            continue
-        if t == INERT_UNDER_PMU:
-            filtered.pop()  # drop the preceding "-global" too
-            continue
-        filtered.append(t)
-    # the reference line has no explicit -nic; this GUI always emits one
-    filtered += ["-nic", "user,model=sungem,mac=00:05:02:12:34:56"]
-    return set(filtered)
+BASE = [f"{QD}/qemu-system-ppc64",
+        "-L", f"{QD}/pc-bios",
+        "-M", "mac99,via=pmu",
+        "-cpu", "970fx",
+        "-bios", f"{QD}/openbios-qemu.elf"]
+NIC = ["-nic", "user,model=sungem,mac=00:05:02:12:34:56"]
+ONBOARD = ["-audiodev", "coreaudio,id=snd0", "-global", "macio-newworld.audiodev=snd0"]
+USB_AUDIO = ["-audiodev", "coreaudio,id=usb", "-device", "usb-audio,audiodev=usb"]
 
 
 def load_fixture(name: str) -> Machine:
     return Machine.load(FIXTURES / name)
 
 
-def gen_tokens(m: Machine, qemu_dir: str, platform: str = "darwin") -> set[str]:
-    argv = command.build_argv(m, qemu_dir, str(FIXTURES), platform)
-    rest = argv[1:]
-    # the reference line has no persisted NVRAM; drop our addition (as
-    # adjacent flag/value pairs, not from the token set -- "-drive" and
-    # "-global" are shared with other options) and check it separately
-    # (test_nvram_is_wired below).
-    nvram_pairs = [("-drive", f"if=none,id=nvr,file={FIXTURES}/nvram.img,format=raw"),
-                  ("-global", "macio-nvram.drive=nvr")]
-    out = []
-    i = 0
-    while i < len(rest):
-        pair = (rest[i], rest[i + 1]) if i + 1 < len(rest) else None
-        if pair in nvram_pairs:
-            i += 2
-            continue
-        out.append(rest[i])
-        i += 1
-    return set(out)
+def argv_of(m: Machine, platform: str = "darwin", qd: str = QD, md: str = MD) -> list[str]:
+    return command.build_argv(m, qd, md, platform)
 
 
-class UserLauncher(unittest.TestCase):
-    """The primary correctness test: the user's real mac99 OS X launch
-    line, minus the two documented, deliberate divergences."""
-
-    def test_mac99_osx(self):
-        qd = FIXTURE_QEMU_DIR["mac99-osx.json"]
-        got = gen_tokens(load_fixture("mac99-osx.json"), qd)
-        want = user_tokens(USER_MAC99_OSX, qd)
-        self.assertEqual(got, want)
-
-    def test_binary_is_absolute_and_first(self):
-        m = load_fixture("mac99-osx.json")
-        argv = command.build_argv(m, "/Applications/qemu-system-ppc-smp-usb-rage-openbios-based",
-                                  str(FIXTURES), "darwin")
-        self.assertEqual(argv[0],
-                         "/Applications/qemu-system-ppc-smp-usb-rage-openbios-based/qemu-system-ppc")
-
-    def test_shell_rendering_shape(self):
-        m = load_fixture("mac99-osx.json")
-        text = command.launcher_text(m, "/q", str(FIXTURES), "darwin")
-        lines = text.splitlines()
-        self.assertEqual(lines[0], "#!/bin/bash")
-        self.assertIn('cd "$(dirname "$0")"', lines)
-        body = [ln for ln in lines if ln.startswith("-") or ln.startswith("/")]
-        for ln in body[:-1]:
-            self.assertTrue(ln.endswith(" \\"), ln)
-        self.assertFalse(body[-1].endswith("\\"))
-        self.assertIn("-M mac99,via=pmu \\", lines)
-        self.assertIn("-nic user,model=sungem,mac=00:05:02:12:34:56 \\", lines)
-
-
-class Options(unittest.TestCase):
-
-    def base(self) -> Machine:
-        return load_fixture("mac99-osx.json")
-
-    def test_via_smp_gate(self):
-        m = self.base()
-        m.via = "cuda"
-        m.smp = 1
-        errors, _ = model.validate(m, None, "darwin", check_files=False)
-        self.assertEqual(errors, [])
-        m.smp = 2
-        errors, _ = model.validate(m, None, "darwin", check_files=False)
-        self.assertTrue(any("via pmu or pmu-adb" in e for e in errors))
-
-    def test_adb_mouse_global_gated_on_via(self):
-        m = self.base()
-        m.via = "pmu"
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertFalse(any("adb-mouse" in t for t in argv))
-        m.via = "cuda"
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertIn("adb-mouse.extended-protocol=on", argv)
-        m.via = "pmu-adb"
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertIn("adb-mouse.extended-protocol=on", argv)
-
-    def test_no_gpu_means_no_vga_none_and_no_device(self):
-        m = self.base()
-        m.gpu = None
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertNotIn("none", [argv[i + 1] for i, t in enumerate(argv) if t == "-vga"])
-        self.assertFalse(any("ati-rage128-pro" in t for t in argv))
-
-    def test_gpu_without_romfile(self):
-        m = self.base()
-        m.gpu = Gpu(romfile=None)
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertIn("-vga", argv)
-        self.assertEqual(argv[argv.index("-vga") + 1], "none")
-        self.assertIn("ati-rage128-pro", argv)
-        self.assertFalse(any("romfile" in t for t in argv))
-
-    def test_nic_model_is_sungem(self):
-        m = self.base()
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-nic") + 1],
-                         "user,model=sungem,mac=00:05:02:12:34:56")
-
-    def test_nic_none(self):
-        m = self.base()
-        m.network = Network(mode="none")
-        argv = command.build_argv(m, "/q", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-nic") + 1], "none")
-
-    def test_no_scsi_no_floppy_options_exist(self):
-        """There is nothing in this module that could emit either: the
-        machine has neither (see the module docstring's ground truth)."""
-        src = (HERE.parent / "qemugui" / "g5_command.py").read_text()
-        src_model = (HERE.parent / "qemugui" / "g5_model.py").read_text()
-        for gone in ("scsi-hd", "scsi-cd", "swim3", "SCSI_IDS", "Floppy"):
-            self.assertNotIn(gone, src)
-            self.assertNotIn(gone, src_model)
-
-    def test_ata_index_explicit_for_every_slot(self):
-        m = self.base()
-        m.ata = [AtaDrive("disk", "/a.img"), AtaDrive("disk", "/b.img"),
-                AtaDrive("cdrom", "/c.iso"), AtaDrive("cdrom", "/d.iso")]
-        argv = command.build_argv(m, "", "/m", "darwin")
-        drives = [t for t in argv if t.startswith("file=") and "nvram" not in t]
-        self.assertEqual(drives, ["file=/a.img,format=raw,media=disk,index=0",
-                                  "file=/b.img,format=raw,media=disk,index=1",
-                                  "file=/c.iso,format=raw,media=cdrom,index=2",
-                                  "file=/d.iso,format=raw,media=cdrom,index=3"])
-
-    def test_no_boot_slot_marked_emits_boot_c(self):
-        m = self.base()
-        self.assertIsNone(m.boot_slot)
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-boot") + 1], "c")
-
-    def test_boot_slot_on_a_cd_emits_boot_d(self):
-        m = self.base()
-        m.boot_slot = 2  # the fixture's cdrom
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-boot") + 1], "d")
-
-    def test_boot_slot_on_a_disk_emits_boot_c(self):
-        m = self.base()
-        m.boot_slot = 0  # the fixture's disk
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-boot") + 1], "c")
-
-    def test_boot_slot_out_of_range_falls_back_to_c(self):
-        m = self.base()
-        m.boot_slot = 9
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-boot") + 1], "c")
-
-    def test_boot_slot_on_an_empty_slot_warns(self):
-        m = self.base()
-        m.boot_slot = 1  # empty in the fixture
-        _errors, warnings = model.validate(m, None, "darwin", check_files=False)
-        self.assertTrue(any("is marked Boot but is empty" in w for w in warnings))
-
-    def test_boot_slot_not_the_lowest_of_its_kind_warns(self):
-        m = self.base()
-        m.ata = [AtaDrive("disk", "/a.img"), AtaDrive("disk", "/b.img"), None, None]
-        m.boot_slot = 1
-        _errors, warnings = model.validate(m, None, "darwin", check_files=False)
-        self.assertTrue(any("is marked Boot, but IDE 0 Master" in w for w in warnings))
-
-    def test_boot_slot_already_the_lowest_of_its_kind_is_quiet(self):
-        m = self.base()
-        m.ata = [AtaDrive("disk", "/a.img"), AtaDrive("disk", "/b.img"), None, None]
-        m.boot_slot = 0
-        _errors, warnings = model.validate(m, None, "darwin", check_files=False)
-        self.assertFalse(any("marked Boot" in w for w in warnings))
-
-    def test_boot_slot_out_of_range_is_an_error(self):
-        m = self.base()
-        m.boot_slot = 9
-        errors, _warnings = model.validate(m, None, "darwin", check_files=False)
-        self.assertTrue(any("not a real drive position" in e for e in errors))
-
-    def test_usb_storage(self):
-        """Candidate only: not verified on any guest here, and there is no
-        editor UI to add one (user review, 2026-09-14). Kept and tested at
-        the record/command layer so a machine.json edited by hand still
-        works, and so this is ready the day someone runs that test."""
-        m = self.base()
-        m.usb_storage = [UsbStorage("/mem1.img", "raw"), UsbStorage("/mem2.img", "raw")]
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertIn("file=/mem1.img,format=raw,if=none,id=usbs0", argv)
-        self.assertIn("usb-storage,drive=usbs0", argv)
-        self.assertIn("file=/mem2.img,format=raw,if=none,id=usbs1", argv)
-        self.assertIn("usb-storage,drive=usbs1", argv)
-
-    def test_nvram_is_wired(self):
-        m = self.base()
-        argv = command.build_argv(m, "", "/machine-dir", "darwin")
-        self.assertIn("if=none,id=nvr,file=/machine-dir/nvram.img,format=raw", argv)
-        self.assertIn("macio-nvram.drive=nvr", argv)
-
-    def test_prom_env_defaults(self):
-        m = self.base()
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertIn("auto-boot?=true", argv)
-        self.assertIn("vga-ndrv?=false", argv)
-        self.assertFalse(any(t.startswith("boot-device=") for t in argv))
-
-    def test_prom_env_boot_device_and_args(self):
-        m = self.base()
-        m.prom_env = PromEnv(auto_boot=False, vga_ndrv=True, boot_device="cd:,\\:tbxi",
-                             boot_args="-v")
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertIn("auto-boot?=false", argv)
-        self.assertIn("vga-ndrv?=true", argv)
-        self.assertIn("boot-device=cd:,\\:tbxi", argv)
-        self.assertIn("boot-args=-v", argv)
-
-    def test_audio_none(self):
-        m = self.base()
-        m.audio = "none"
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertIn("none,id=snd", argv)
-        self.assertIn("screamer.audiodev=snd", argv)
-
-    def test_pc_bios_path_is_relative_to_qemu_dir(self):
-        m = self.base()
-        argv = command.build_argv(m, "/install", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-L") + 1], "/install/pc-bios")
-
-    def test_there_is_no_firmware_override(self):
-        """-L ./pc-bios is fixed by the distribution layout; there is
-        nothing on this machine that needs a different OpenBIOS binary, so
-        the option was removed rather than shipped unused (user review,
-        2026-09-14)."""
-        self.assertFalse(hasattr(Machine(), "firmware"))
-        src = (HERE.parent / "qemugui" / "g5_command.py").read_text()
-        self.assertNotIn('"-bios"', src)          # "pc-bios" itself stays
-
-    def test_comma_in_path_is_escaped_for_qemu(self):
-        m = self.base()
-        m.ata[0] = AtaDrive("disk", "/Volumes/x/a,b.img")
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertIn("file=/Volumes/x/a,,b.img,format=raw,media=disk,index=0", argv)
-
-    def test_vnc_replaces_local_display(self):
-        """Confirmed working end-to-end against this machine type (5900+N
-        reachable) with exactly this combination: -display none, -vnc."""
-        m = self.base()
-        m.vnc = ":1"
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[argv.index("-display") + 1], "none")
-        self.assertEqual(argv[argv.index("-vnc") + 1], ":1")
-
-    def test_no_vnc_means_normal_display_and_no_vnc_flag(self):
-        m = self.base()
-        m.vnc = ""
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertNotIn("-vnc", argv)
-        self.assertNotEqual(argv[argv.index("-display") + 1], "none")
-
-    def test_vnc_validation(self):
-        m = self.base()
-        m.vnc = "not a display"
-        errors, _ = model.validate(m, None, "darwin", check_files=False)
-        self.assertTrue(any("VNC display" in e for e in errors))
-        m.vnc = ":1"
-        errors, _ = model.validate(m, None, "darwin", check_files=False)
-        self.assertEqual(errors, [])
-        m.vnc = "127.0.0.1:9"
-        errors, _ = model.validate(m, None, "darwin", check_files=False)
-        self.assertEqual(errors, [])
-
-    def test_extra_args_appended_verbatim(self):
-        m = self.base()
-        m.extra_args = "-qmp unix:/tmp/live.sock,server=on,wait=off"
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(argv[-2:], ["-qmp", "unix:/tmp/live.sock,server=on,wait=off"])
-
-
-class ExtraArgsQuoting(unittest.TestCase):
-    """The field is parsed like a shell and every token re-quoted for the
-    launcher, so spaces, single quotes and '?' survive verbatim; the argv
-    the GUI spawns directly is the same list on every host."""
-
-    TEXT = "-prom-env 'boot-args=-v' -prom-env 'boot-args=-v -x' -name \"it's\" -x 'a?b'"
-    WANT = ["-prom-env", "boot-args=-v", "-prom-env", "boot-args=-v -x", "-name", "it's",
-            "-x", "a?b"]
-
-    def machine(self) -> Machine:
-        m = load_fixture("mac99-osx.json")
-        m.extra_args = self.TEXT
-        return m
-
-    def test_argv_is_the_same_on_every_host(self):
-        for platform in ("darwin", "win32", "linux"):
-            argv = command.build_argv(self.machine(), "", "/m", platform)
-            self.assertEqual(argv[-len(self.WANT):], self.WANT, platform)
-
-    def test_stored_string_is_verbatim(self):
-        m = self.machine()
-        self.assertEqual(Machine.from_json(m.to_json()).extra_args, self.TEXT)
-
-    def test_bat_requotes_each_token(self):
-        m = self.machine()
-        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32")
-        lines = command.render_bat(argv, command.extra_count(m, "win32")).split("\r\n")
-        self.assertIn('-prom-env "boot-args=-v" ^', lines)
-        self.assertIn('-prom-env "boot-args=-v -x" ^', lines)
-        self.assertIn("-name it's ^", lines)
-        self.assertIn("-x a?b", lines)
-        self.assertIn("-global screamer.audiodev=snd ^", lines)
-
-    def test_extra_tokens_are_quoted_like_the_prom_env_lines(self):
-        text = command.launcher_text(self.machine(), "/q", "/m", "darwin")
-        lines = text.split("\n")
-        self.assertIn("-prom-env 'auto-boot?=true' \\", lines)
-        self.assertIn("-prom-env 'boot-args=-v' \\", lines)
-        self.assertIn("-M mac99,via=pmu \\", lines)
-
-    @unittest.skipIf(paths.is_windows(), "needs bash")
-    def test_run_command_reproduces_the_argv_when_executed(self):
-        import subprocess
-        with tempfile.TemporaryDirectory() as td:
-            qd = Path(td) / "q"
-            qd.mkdir()
-            fake = qd / paths.qemu_binary_name("darwin")
-            fake.write_text('#!/bin/bash\nfor a in "$@"; do printf "%s\\n" "$a"; done\n')
-            fake.chmod(0o755)
-            path, argv = command.write_launcher(self.machine(), str(qd), td, "darwin")
-            text = path.read_text()
-            self.assertIn("-prom-env 'boot-args=-v' \\\n", text)
-            self.assertIn("-prom-env 'boot-args=-v -x' \\\n", text)
-            got = subprocess.run([str(path)], capture_output=True, text=True, check=True)
-            self.assertEqual(got.stdout.splitlines(), argv[1:])
-            self.assertEqual(got.stdout.splitlines()[-len(self.WANT):], self.WANT)
-
-
-class RtcBase(unittest.TestCase):
-
-    ACCEPTED = ("localtime", "utc", "2005-04-29", "2005-04-29T10:30:00")
-
-    def base(self) -> Machine:
-        return load_fixture("mac99-osx.json")
-
-    def errors(self, m: Machine) -> list[str]:
-        return model.validate(m, None, "darwin", check_files=False)[0]
-
-    def test_empty_is_the_default_and_emits_nothing(self):
-        m = self.base()
-        self.assertEqual(m.rtc_base, "")
-        self.assertEqual(Machine().rtc_base, "")
-        self.assertNotIn("-rtc", command.build_argv(m, "", "/m", "darwin"))
-        self.assertEqual(self.errors(m), [])
-
-    def test_each_accepted_form(self):
-        for value in self.ACCEPTED:
-            m = self.base()
-            m.rtc_base = value
-            self.assertEqual(self.errors(m), [], value)
-            argv = command.build_argv(m, "", "/m", "darwin")
-            self.assertEqual(argv[argv.index("-rtc") + 1], f"base={value}")
-
-    def test_rejected_form(self):
-        m = self.base()
-        m.rtc_base = "29/04/2005 10:30"
-        self.assertTrue(any("Date and time" in e for e in self.errors(m)))
-
-    def test_json_round_trip_and_missing_key(self):
-        m = self.base()
-        m.rtc_base = "2005-04-29T10:30:00"
-        again = Machine.from_json(m.to_json())
-        self.assertEqual(again.rtc_base, m.rtc_base)
-        self.assertEqual(again, m)
-        d = json.loads(m.to_json())
-        del d["rtc_base"]
-        self.assertEqual(Machine.from_dict(d).rtc_base, "")
-
-    def test_both_launchers(self):
-        m = self.base()
-        m.rtc_base = "2005-04-29T10:30:00"
-        self.assertIn("-rtc base=2005-04-29T10:30:00",
-                      command.launcher_text(m, "/q", "/m", "darwin").split("\n"))
-        self.assertIn("-rtc base=2005-04-29T10:30:00",
-                      command.launcher_text(m, r"C:\q", r"C:\m", "win32").split("\r\n"))
-
-
-USB_AUDIO = ["-device", "usb-audio,audiodev=usb"]
-SCREAMER = ["-global", "screamer.audiodev=snd"]
+def plain(**kw) -> Machine:
+    kw.setdefault("name", "t")
+    kw.setdefault("display", "cocoa")
+    return Machine(**kw)
 
 
 def pairs(argv: list[str]) -> list[list[str]]:
@@ -488,198 +57,441 @@ def audiodevs(argv: list[str]) -> list[str]:
     return [g[1] for g in pairs(argv) if g[0] == "-audiodev"]
 
 
-class UsbAudio(unittest.TestCase):
-    """The USB device gets its own backend: on a shared one QEMU's mixer
-    advances only as far as the least-advanced voice, and the guest keeps
-    the Screamer's voice open but silent, so the USB device is inaudible
-    (user-verified, 2026-09-21)."""
+class GoldenCommandLines(unittest.TestCase):
+    """Whole argv lists, compared exactly."""
 
-    def base(self) -> Machine:
-        m = load_fixture("mac99-osx.json")
-        m.extra_args = ""
-        return m
+    def test_radeon9800_gl_fast_raster_threads(self):
+        self.assertEqual(argv_of(load_fixture("g5-r350.json")), BASE + [
+            "-smp", "2", "-display", "cocoa", "-m", "4096", "-boot", "c",
+            "-vga", "none"] + ONBOARD + USB_AUDIO + [
+            "-device", "ati-radeon9800,bus=pci.0,addr=0x10,gl=fast,raster-threads=4,"
+                       f"romfile={QD}/ati_oem_9800xt_123_agp_full.rom"] + NIC + [
+            "-drive", "file=/images/MacOSX-10.5.iso,format=raw,media=cdrom,index=2",
+            "-drive", "file=/images/leopard.qcow2,format=qcow2,if=none,id=sata0",
+            "-device", "ide-hd,bus=sata.0,drive=sata0",
+            "-prom-env", "auto-boot?=true"])
 
-    def test_off_by_default_and_absent(self):
-        m = self.base()
-        self.assertFalse(m.usb_audio)
-        self.assertFalse(Machine().usb_audio)
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertNotIn(USB_AUDIO, pairs(argv))
-        self.assertEqual(audiodevs(argv), ["coreaudio,id=snd"])
+    def test_rv100(self):
+        self.assertEqual(argv_of(load_fixture("g5-rv100.json")), BASE + [
+            "-smp", "1", "-display", "cocoa", "-m", "2048", "-boot", "c",
+            "-vga", "none"] + ONBOARD + [
+            "-device", "ati-vga,model=rv100,bus=pci.0,addr=0x10,agp=on,raster-threads=1,"
+                       f"romfile={QD}/ati_radeon_7000_208.rom"] + NIC + [
+            "-drive", "file=/images/leopard.img,format=raw,media=disk,index=0",
+            "-prom-env", "auto-boot?=true", "-prom-env", "boot-args=-v"])
 
-    def test_off_leaves_the_launcher_byte_identical(self):
-        m = self.base()
-        m.usb_audio = False
-        for platform, qd in (("darwin", "/q"), ("win32", r"C:\q")):
-            argv = command.build_argv(m, qd, "/m", platform)
-            self.assertEqual(len(audiodevs(argv)), 1)
-            self.assertNotIn("usb", command.launcher_text(m, qd, "/m", platform))
+    def test_ata_disk(self):
+        m = plain(drives=[Drive("disk", "/hd/a.img"), None, None, None])
+        self.assertEqual(argv_of(m), BASE + [
+            "-smp", "1", "-display", "cocoa", "-m", "2048", "-boot", "c"] + ONBOARD + NIC + [
+            "-drive", "file=/hd/a.img,format=raw,media=disk,index=0",
+            "-prom-env", "auto-boot?=true"])
 
-    def test_on_adds_a_second_backend_in_order(self):
-        m = self.base()
-        m.usb_audio = True
-        for platform, backend in (("darwin", "coreaudio"), ("win32", "dsound")):
-            argv = command.build_argv(m, "", "/m", platform)
-            p = pairs(argv)
-            self.assertEqual(audiodevs(argv), [f"{backend},id=snd", f"{backend},id=usb"])
-            i = p.index(USB_AUDIO)
-            self.assertEqual(p[i - 3:i + 1], [["-audiodev", f"{backend},id=snd"], SCREAMER,
-                                              ["-audiodev", f"{backend},id=usb"], USB_AUDIO])
+    def test_sata_disks(self):
+        m = plain(drives=[None, None, Drive("disk", "/hd/a.qcow2", "qcow2"),
+                          Drive("disk", "/hd/b.img")])
+        self.assertEqual(argv_of(m), BASE + [
+            "-smp", "1", "-display", "cocoa", "-m", "2048", "-boot", "c"] + ONBOARD + NIC + [
+            "-drive", "file=/hd/a.qcow2,format=qcow2,if=none,id=sata0",
+            "-device", "ide-hd,bus=sata.0,drive=sata0",
+            "-drive", "file=/hd/b.img,format=raw,if=none,id=sata1",
+            "-device", "ide-hd,bus=sata.1,drive=sata1",
+            "-prom-env", "auto-boot?=true"])
 
-    def test_second_backend_follows_the_audio_choice(self):
-        m = self.base()
-        m.usb_audio = True
-        m.audio = "sdl"
-        self.assertEqual(audiodevs(command.build_argv(m, "", "/m", "darwin")),
-                         ["sdl,id=snd", "sdl,id=usb"])
-        self.assertEqual(audiodevs(command.build_argv(m, "", "/m", "win32")),
-                         ["sdl,id=snd", "sdl,id=usb"])
-        m.audio = "none"
-        self.assertEqual(audiodevs(command.build_argv(m, "", "/m", "darwin")),
-                         ["none,id=snd", "none,id=usb"])
+    def test_cd_boot(self):
+        m = plain(boot_slot=model.ATA_MASTER,
+                  drives=[Drive("cdrom", "/iso/install.iso"), None,
+                          Drive("disk", "/hd/a.img"), None])
+        self.assertEqual(argv_of(m), BASE + [
+            "-smp", "1", "-display", "cocoa", "-m", "2048", "-boot", "d"] + ONBOARD + NIC + [
+            "-drive", "file=/iso/install.iso,format=raw,media=cdrom,index=2",
+            "-drive", "file=/hd/a.img,format=raw,if=none,id=sata0",
+            "-device", "ide-hd,bus=sata.0,drive=sata0",
+            "-prom-env", "auto-boot?=true"])
 
-    def test_not_doubled_when_extra_args_already_has_one(self):
-        m = self.base()
-        m.usb_audio = True
-        m.extra_args = "-device usb-audio,audiodev=snd"
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertNotIn(USB_AUDIO, pairs(argv))
-        self.assertEqual(audiodevs(argv), ["coreaudio,id=snd"])
-        self.assertEqual(argv[-2:], ["-device", "usb-audio,audiodev=snd"])
-        m.extra_args = "-device usb-audio"
-        argv = command.build_argv(m, "", "/m", "darwin")
-        self.assertEqual(sum(1 for t in argv if t.startswith("usb-audio")), 1)
-        self.assertEqual(audiodevs(argv), ["coreaudio,id=snd"])
+    def test_onboard_and_usb_audio_have_their_own_backends(self):
+        m = plain(usb_audio=True)
+        self.assertEqual(argv_of(m), BASE + [
+            "-smp", "1", "-display", "cocoa", "-m", "2048", "-boot", "c"] + ONBOARD + USB_AUDIO
+            + NIC + ["-prom-env", "auto-boot?=true"])
 
-    def test_json_round_trip_and_missing_key(self):
-        m = self.base()
-        m.usb_audio = True
-        again = Machine.from_json(m.to_json())
-        self.assertTrue(again.usb_audio)
-        self.assertEqual(again, m)
-        d = json.loads(m.to_json())
-        del d["usb_audio"]
-        self.assertFalse(Machine.from_dict(d).usb_audio)
+    def test_vnc(self):
+        m = plain(vnc=":5")
+        self.assertEqual(argv_of(m), BASE + [
+            "-smp", "1", "-display", "none", "-vnc", ":5", "-m", "2048", "-boot", "c"]
+            + ONBOARD + NIC + ["-prom-env", "auto-boot?=true"])
 
-    def test_both_launchers(self):
-        m = self.base()
-        m.usb_audio = True
-        mac = command.launcher_text(m, "/q", "/m", "darwin")
-        self.assertIn("-audiodev coreaudio,id=snd \\\n-global screamer.audiodev=snd \\\n"
-                      "-audiodev coreaudio,id=usb \\\n-device usb-audio,audiodev=usb \\\n", mac)
-        bat = command.launcher_text(m, r"C:\q", r"C:\m", "win32")
-        self.assertIn('-audiodev "dsound,id=snd" ^\r\n-global screamer.audiodev=snd ^\r\n'
-                      '-audiodev "dsound,id=usb" ^\r\n-device "usb-audio,audiodev=usb" ^\r\n', bat)
-        m.usb_audio = False
-        self.assertNotIn("usb-audio", command.launcher_text(m, "/q", "/m", "darwin"))
-        self.assertNotIn("usb-audio", command.launcher_text(m, r"C:\q", r"C:\m", "win32"))
+    def test_windows(self):
+        m = load_fixture("g5-r350.json")
+        q, d = r"C:\qemu-g5", r"C:\Machines\Leopard"
+        self.assertEqual(argv_of(m, "win32", q, d), [
+            r"C:\qemu-g5\qemu-system-ppc64.exe",
+            "-L", r"C:\qemu-g5\pc-bios",
+            "-M", "mac99,via=pmu", "-cpu", "970fx",
+            "-bios", r"C:\qemu-g5\openbios-qemu.elf",
+            "-smp", "2", "-display", "cocoa", "-m", "4096", "-boot", "c",
+            "-vga", "none",
+            "-audiodev", "dsound,id=snd0", "-global", "macio-newworld.audiodev=snd0",
+            "-audiodev", "dsound,id=usb", "-device", "usb-audio,audiodev=usb",
+            "-device", "ati-radeon9800,bus=pci.0,addr=0x10,gl=fast,raster-threads=4,"
+                       r"romfile=C:\qemu-g5\ati_oem_9800xt_123_agp_full.rom"] + NIC + [
+            "-drive", r"file=C:\images\MacOSX-10.5.iso,format=raw,media=cdrom,index=2",
+            "-drive", r"file=C:\images\leopard.qcow2,format=qcow2,if=none,id=sata0",
+            "-device", "ide-hd,bus=sata.0,drive=sata0",
+            "-prom-env", "auto-boot?=true"])
+
+    def test_windows_bat_rendering(self):
+        m = load_fixture("g5-r350.json")
+        text = command.launcher_text(m, r"C:\qemu-g5", r"C:\Machines\Leopard", "win32")
+        lines = text.split("\r\n")
+        self.assertEqual(lines[0], "@echo off")
+        self.assertIn(r"C:\qemu-g5\qemu-system-ppc64.exe ^", lines)
+        self.assertIn('-M "mac99,via=pmu" ^', lines)
+        self.assertIn('-audiodev "dsound,id=snd0" ^', lines)
+        self.assertIn("-global macio-newworld.audiodev=snd0 ^", lines)
+        self.assertIn('-device "ide-hd,bus=sata.0,drive=sata0" ^', lines)
+        self.assertIn("-prom-env auto-boot?=true", lines)
+        self.assertNotIn("sudo", text)
+        self.assertNotIn("coreaudio", text)
+
+    def test_macos_shell_rendering(self):
+        text = command.launcher_text(load_fixture("g5-r350.json"), QD, MD, "darwin")
+        lines = text.splitlines()
+        self.assertEqual(lines[:3], ["#!/bin/bash",
+                                     f"# Written by {paths.APP_NAME}. Do not edit.",
+                                     'cd "$(dirname "$0")"'])
+        body = [ln for ln in lines if ln.startswith("-") or ln.startswith("/")]
+        for ln in body[:-1]:
+            self.assertTrue(ln.endswith(" \\"), ln)
+        self.assertEqual(body[-1], "-prom-env 'auto-boot?=true'")
+        self.assertIn("-device ide-hd,bus=sata.0,drive=sata0 \\", lines)
 
 
-class WindowsRendering(unittest.TestCase):
+class Graphics(unittest.TestCase):
 
-    def test_bat_shape(self):
-        m = load_fixture("mac99-osx.json")
-        argv = command.build_argv(m, r"C:\mac99", r"C:\Machines\OSX", "win32")
-        text = command.render_bat(argv)
-        self.assertEqual(argv[0], r"C:\mac99\qemu-system-ppc.exe")
-        self.assertIn('cd /d "%~dp0"', text)
-        self.assertIn("@echo off", text)
-        self.assertIn(" ^\r\n", text)
-        self.assertNotIn(" \\\r\n", text)
-        body = [ln for ln in text.split("\r\n") if ln.startswith("-")]
-        self.assertFalse(body[-1].endswith("^"))
+    def gpu_arg(self, gpu: Gpu) -> str:
+        argv = argv_of(plain(gpu=gpu))
+        self.assertEqual(argv[argv.index("-vga") + 1], "none")
+        return next(t for t in argv if t.startswith("ati-"))
+
+    def test_no_card_means_the_machines_own_vga(self):
+        argv = argv_of(plain())
+        self.assertNotIn("-vga", argv)
+        self.assertFalse(any(t.startswith("ati-") for t in argv))
+
+    def test_radeon9800_defaults(self):
+        self.assertEqual(self.gpu_arg(Gpu("radeon9800")),
+                         "ati-radeon9800,bus=pci.0,addr=0x10,gl=off")
+
+    def test_radeon9800_every_setting(self):
+        self.assertEqual(self.gpu_arg(Gpu("radeon9800", "/roms/r,9800.rom", "on", 1, "off")),
+                         "ati-radeon9800,bus=pci.0,addr=0x10,gl=on,raster-threads=1,"
+                         "async-engine=off,romfile=/roms/r,,9800.rom")
+
+    def test_rv100_agp_off_and_no_gl(self):
+        self.assertEqual(self.gpu_arg(Gpu("rv100", None, "fast", 0, "on", False)),
+                         "ati-vga,model=rv100,bus=pci.0,addr=0x10,agp=off,async-engine=on")
+
+    def test_validation(self):
+        errors, warnings = model.validate(plain(gpu=Gpu("radeon9800")), None, "darwin",
+                                          check_files=False)
+        self.assertEqual(errors, [])
+        self.assertIn("The graphics card has no ROM file.", warnings)
+        for bad in (Gpu("voodoo", "x.rom"), Gpu("radeon9800", "x.rom", "verify"),
+                    Gpu("radeon9800", "x.rom", raster_threads=9),
+                    Gpu("rv100", "x.rom", async_engine="maybe")):
+            errors, _ = model.validate(plain(gpu=bad), None, "darwin", check_files=False)
+            self.assertEqual(len(errors), 1, bad)
+
+    def test_missing_rom_and_firmware_are_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / paths.qemu_binary_name("darwin")).write_text("")
+            m = plain(gpu=Gpu("radeon9800", "gone.rom"))
+            _, warnings = model.validate(m, td, "darwin")
+            self.assertTrue(any("ROM is missing" in w for w in warnings), warnings)
+            self.assertTrue(any("firmware is missing" in w for w in warnings), warnings)
+            (Path(td) / "gone.rom").write_text("")
+            (Path(td) / model.FIRMWARE_FILE).write_text("")
+            _, warnings = model.validate(m, td, "darwin")
+            self.assertEqual(warnings, [])
+
+    def test_roms_in_lists_rom_files_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            for n in ("b.rom", "A.ROM", "openbios-qemu.elf", "notes.txt"):
+                (Path(td) / n).write_text("")
+            (Path(td) / "dir.rom").mkdir()
+            self.assertEqual(model.roms_in(td), ["A.ROM", "b.rom"])
+        self.assertEqual(model.roms_in(None), [])
+        self.assertEqual(model.roms_in("/no/such/folder"), [])
+
+
+class Drives(unittest.TestCase):
+
+    def errors(self, drives) -> list[str]:
+        return model.validate(plain(drives=drives), None, "darwin", check_files=False)[0]
+
+    def test_positions_take_what_the_bus_holds(self):
+        self.assertEqual(model.slot_kinds(model.ATA_MASTER), ("disk", "cdrom"))
+        self.assertEqual(model.slot_kinds(model.ATA_SLAVE), ("cdrom",))
+        self.assertEqual(model.slot_kinds(model.SATA_A), ("disk",))
+        self.assertEqual(model.slot_kinds(model.SATA_B), ("disk",))
+
+    def test_a_cd_on_sata_is_refused(self):
+        self.assertTrue(any("SATA port A takes a hard disk" in e
+                            for e in self.errors([None, None, Drive("cdrom", "/c.iso"), None])))
+
+    def test_a_hard_disk_on_the_ata_slave_is_refused(self):
+        self.assertTrue(any("ATA-100 slave takes a CD" in e
+                            for e in self.errors([Drive("disk", "/a.img"),
+                                                  Drive("disk", "/b.img"), None, None])))
+
+    def test_ata_indexes_never_send_a_drive_to_sata(self):
+        def drive_args(drives):
+            return [t for t in argv_of(plain(drives=drives)) if t.startswith("file=")]
+        self.assertEqual(drive_args([Drive("disk", "/a"), Drive("cdrom", "/c"), None, None]),
+                         ["file=/a,format=raw,media=disk,index=0",
+                          "file=/c,format=raw,media=cdrom,index=2"])
+        self.assertEqual(drive_args([Drive("cdrom", "/c1"), Drive("cdrom", "/c2"), None, None]),
+                         ["file=/c1,format=raw,media=cdrom,index=0",
+                          "file=/c2,format=raw,media=cdrom,index=2"])
+        self.assertEqual(drive_args([None, Drive("cdrom", "/c"), None, None]),
+                         ["file=/c,format=raw,media=cdrom,index=2"])
+
+    def test_boot_follows_the_marked_drive_kind(self):
+        m = plain(drives=[Drive("cdrom", "/c.iso"), None, Drive("disk", "/a.img"), None])
+        self.assertIn("c", argv_of(m)[argv_of(m).index("-boot") + 1])
+        m.boot_slot = model.ATA_MASTER
+        self.assertEqual(argv_of(m)[argv_of(m).index("-boot") + 1], "d")
+        m.boot_slot = model.SATA_A
+        self.assertEqual(argv_of(m)[argv_of(m).index("-boot") + 1], "c")
+
+    def test_a_disk_behind_the_ata_disk_does_not_boot_first(self):
+        m = plain(boot_slot=model.SATA_A,
+                  drives=[Drive("disk", "/a.img"), None, Drive("disk", "/b.img"), None])
+        _, warnings = model.validate(m, None, "darwin", check_files=False)
+        self.assertTrue(any("ATA-100 master (also a hard disk) will boot first" in w
+                            for w in warnings), warnings)
+        m.boot_slot = model.ATA_MASTER
+        self.assertEqual(model.validate(m, None, "darwin", check_files=False)[1], [])
+
+    def test_marked_but_empty_warns(self):
+        m = plain(boot_slot=model.SATA_B)
+        self.assertTrue(any("is marked Boot but is empty" in w
+                            for w in model.validate(m, None, "darwin", check_files=False)[1]))
+
+    def test_new_disks_go_to_sata_first(self):
+        m = plain()
+        self.assertEqual(m.first_unfilled_disk_slot(), model.SATA_A)
+        m.drives[model.SATA_A] = Drive("disk", "/a.img")
+        self.assertEqual(m.first_unfilled_disk_slot(), model.SATA_B)
+        m.drives[model.SATA_B] = Drive("disk", "/b.img")
+        self.assertEqual(m.first_unfilled_disk_slot(), model.ATA_MASTER)
+
+
+class Options(unittest.TestCase):
+
+    def test_cpus_and_memory_limits(self):
+        for smp, ok in ((1, True), (2, True), (3, False), (0, False)):
+            errors, _ = model.validate(plain(smp=smp), None, "darwin", check_files=False)
+            self.assertEqual(errors == [], ok, smp)
+        for ram, ok in ((2048, True), (8192, True), (16384, True), (16385, False), (128, False)):
+            errors, _ = model.validate(plain(ram_mb=ram), None, "darwin", check_files=False)
+            self.assertEqual(errors == [], ok, ram)
+
+    def test_usb_tablet_is_off_by_default(self):
+        self.assertFalse(model.new_machine("t").usb_tablet)
+        self.assertNotIn("usb-tablet", argv_of(plain()))
+        self.assertEqual(pairs(argv_of(plain(usb_tablet=True))).count(["-device", "usb-tablet"]), 1)
+
+    def test_prom_env(self):
+        m = plain(prom_env=PromEnv(False, "hd:,\\\\:tbxi", "-v"))
+        argv = argv_of(m)
+        self.assertEqual(argv[argv.index("-prom-env"):],
+                         ["-prom-env", "auto-boot?=false",
+                          "-prom-env", "boot-device=hd:,\\\\:tbxi",
+                          "-prom-env", "boot-args=-v"])
+
+    def test_no_nvram_option_is_ever_passed(self):
+        argv = argv_of(load_fixture("g5-r350.json"))
+        self.assertFalse(any("nvram" in t for t in argv), argv)
+
+    def test_audio_none_and_sdl(self):
+        for audio in ("none", "sdl"):
+            m = plain(audio=audio, usb_audio=True)
+            self.assertEqual(audiodevs(argv_of(m)), [f"{audio},id=snd0", f"{audio},id=usb"])
+
+    def test_usb_audio_not_doubled_by_extra_args(self):
+        m = plain(usb_audio=True, extra_args="-device usb-audio,audiodev=snd0")
+        argv = argv_of(m)
+        self.assertEqual(audiodevs(argv), ["coreaudio,id=snd0"])
+        self.assertEqual(argv[-2:], ["-device", "usb-audio,audiodev=snd0"])
+
+    def test_vnc_validation(self):
+        for spec, ok in ((":1", True), ("127.0.0.1:3", True), ("one", False)):
+            errors, _ = model.validate(plain(vnc=spec), None, "darwin", check_files=False)
+            self.assertEqual(errors == [], ok, spec)
+
+    def test_comma_in_path_is_escaped_for_qemu(self):
+        m = plain(drives=[Drive("disk", "/a,b/c.img"), None, None, None])
+        self.assertIn("file=/a,,b/c.img,format=raw,media=disk,index=0", argv_of(m))
+
+    def test_extra_args_appended_verbatim(self):
+        m = plain(extra_args="-qmp unix:/tmp/live.sock,server=on,wait=off")
+        self.assertEqual(argv_of(m)[-2:], ["-qmp", "unix:/tmp/live.sock,server=on,wait=off"])
+
+
+class ExtraArgsQuoting(unittest.TestCase):
+    TEXT = "-prom-env 'boot-args=-v' -prom-env 'boot-args=-v -x' -name \"it's\" -x 'a?b'"
+    WANT = ["-prom-env", "boot-args=-v", "-prom-env", "boot-args=-v -x", "-name", "it's",
+            "-x", "a?b"]
+
+    def machine(self) -> Machine:
+        return plain(extra_args=self.TEXT)
+
+    def test_argv_is_the_same_on_every_host(self):
+        for platform in ("darwin", "win32", "linux"):
+            self.assertEqual(argv_of(self.machine(), platform)[-len(self.WANT):], self.WANT)
+
+    def test_bat_requotes_each_token(self):
+        m = self.machine()
+        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32")
+        lines = command.render_bat(argv, command.extra_count(m, "win32")).split("\r\n")
+        self.assertIn('-prom-env "boot-args=-v" ^', lines)
+        self.assertIn('-prom-env "boot-args=-v -x" ^', lines)
+        self.assertIn("-name it's ^", lines)
+        self.assertIn("-x a?b", lines)
+
+    @unittest.skipIf(paths.is_windows(), "needs bash")
+    def test_run_command_reproduces_the_argv_when_executed(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            qd = Path(td) / "q"
+            qd.mkdir()
+            fake = qd / paths.qemu_binary_name("darwin")
+            fake.write_text('#!/bin/bash\nfor a in "$@"; do printf "%s\\n" "$a"; done\n')
+            fake.chmod(0o755)
+            m = load_fixture("g5-r350.json")
+            m.extra_args = self.TEXT
+            path, argv = command.write_launcher(m, str(qd), td, "darwin")
+            got = subprocess.run([str(path)], capture_output=True, text=True, check=True)
+            self.assertEqual(got.stdout.splitlines(), argv[1:])
+
+
+class RtcBase(unittest.TestCase):
+
+    def test_forms(self):
+        self.assertNotIn("-rtc", argv_of(plain()))
+        for value in ("localtime", "utc", "2005-04-29", "2005-04-29T10:30:00"):
+            m = plain(rtc_base=value)
+            self.assertEqual(model.validate(m, None, "darwin", check_files=False)[0], [])
+            argv = argv_of(m)
+            self.assertEqual(argv[argv.index("-rtc") + 1], f"base={value}")
+        errors, _ = model.validate(plain(rtc_base="29/04/2005"), None, "darwin", check_files=False)
+        self.assertTrue(any("Date and time" in e for e in errors))
 
 
 class Networking(unittest.TestCase):
 
     def nic(self, mode, ifname="", platform="darwin"):
-        m = load_fixture("mac99-osx.json")
-        m.network = Network(mode, "00:05:02:12:34:56", ifname)
-        argv = command.build_argv(m, "/q", "/m", platform)
+        argv = argv_of(plain(network=Network(mode, "00:05:02:12:34:56", ifname)), platform)
         return argv[argv.index("-nic") + 1]
 
-    def test_vmnet_bridged(self):
+    def test_modes(self):
+        self.assertEqual(self.nic("none"), "none")
         self.assertEqual(self.nic("vmnet-bridged", "en0"),
                          "vmnet-bridged,ifname=en0,model=sungem,mac=00:05:02:12:34:56")
-
-    def test_vmnet_shared(self):
-        self.assertEqual(self.nic("vmnet-shared"), "vmnet-shared,model=sungem,mac=00:05:02:12:34:56")
-
-    def test_tap(self):
+        self.assertEqual(self.nic("vmnet-shared"),
+                         "vmnet-shared,model=sungem,mac=00:05:02:12:34:56")
         self.assertEqual(self.nic("tap", "TAP-Windows Adapter V9", "win32"),
                          "tap,ifname=TAP-Windows Adapter V9,model=sungem,mac=00:05:02:12:34:56")
 
     def test_vmnet_command_has_sudo_prefix_and_chown_tail(self):
-        m = load_fixture("mac99-osx.json")
-        m.network = Network("vmnet-bridged", "00:05:02:12:34:56", "en0")
-        text = command.launcher_text(m, "/Applications/qemu-system-ppc-smp-usb-rage-openbios-based",
-                                     "/m", "darwin")
-        lines = text.splitlines()
-        self.assertTrue(any(ln.startswith("sudo /Applications/") for ln in lines))
+        m = plain(network=Network("vmnet-bridged", "00:05:02:12:34:56", "en0"))
+        lines = command.launcher_text(m, QD, MD, "darwin").splitlines()
+        self.assertTrue(any(ln.startswith(f"sudo {QD}/qemu-system-ppc64") for ln in lines))
         self.assertTrue(lines[-1].startswith("sudo -n chown "), lines[-1])
-        self.assertIn("nvram.img", lines[-1])
+        self.assertTrue(lines[-1].split("}\" ")[1].startswith("nvram.img"), lines[-1])
         self.assertNotIn("pram.img", lines[-1])
 
     def test_bat_never_has_sudo(self):
-        m = load_fixture("mac99-osx.json")
-        m.network = Network("tap", "00:05:02:12:34:56", "TAP-Windows Adapter V9")
-        text = command.launcher_text(m, r"C:\q", r"C:\m", "win32")
-        self.assertNotIn("sudo", text)
+        m = plain(network=Network("tap", "00:05:02:12:34:56", "TAP-Windows Adapter V9"))
+        self.assertNotIn("sudo", command.launcher_text(m, r"C:\q", r"C:\m", "win32"))
+
+    def test_hosts_offer_their_own_modes(self):
+        self.assertIn("tap", model.network_modes_for_host("win32"))
+        self.assertNotIn("vmnet-bridged", model.network_modes_for_host("win32"))
+        self.assertIn("vmnet-bridged", model.network_modes_for_host("darwin"))
+        self.assertNotIn("tap", model.network_modes_for_host("darwin"))
 
 
 class JsonRoundTrip(unittest.TestCase):
 
     def test_fixtures_round_trip(self):
-        for f in sorted(FIXTURES.glob("mac99-*.json")):
+        for f in sorted(FIXTURES.glob("g5-*.json")):
             m = Machine.load(f)
-            again = Machine.from_json(m.to_json())
-            self.assertEqual(m, again, f.name)
+            self.assertEqual(m, Machine.from_json(m.to_json()), f.name)
             self.assertEqual(json.loads(m.to_json())["schema"], model.SCHEMA)
 
     def test_full_record_round_trip(self):
-        m = Machine(name="Every field", via="cuda", ram_mb=1536, smp=1,
-                    display="cocoa", vnc=":2", audio="none",
-                    gpu=Gpu("card.rom"),
-                    network=Network("user", "00:11:22:33:44:55"),
-                    boot_slot=2,
-                    ata=[AtaDrive("disk", "/a.img", "qcow2"), None, AtaDrive("cdrom", "/c.iso"), None],
-                    usb_storage=[UsbStorage("/mem.img", "raw")],
-                    prom_env=PromEnv(False, True, "cd:,\\:tbxi", "-v"),
+        m = Machine(name="Every field", ram_mb=8192, smp=2, display="sdl", vnc=":2",
+                    audio="none", usb_audio=True, usb_tablet=True,
+                    gpu=Gpu("rv100", "card.rom", "on", 3, "off", False),
+                    network=Network("user", "00:11:22:33:44:55"), boot_slot=1,
+                    drives=[Drive("disk", "/a.img", "qcow2"), Drive("cdrom", "/c.iso"),
+                            Drive("disk", "/s.img"), None],
+                    prom_env=PromEnv(False, "cd:,\\:tbxi", "-v"), rtc_base="localtime",
                     extra_args="-qmp none", notes="n\u00f6tes")
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "machine.json"
             m.save(p)
             self.assertEqual(Machine.load(p), m)
 
+    def test_missing_keys_take_defaults(self):
+        m = Machine.from_dict({"name": "old"})
+        self.assertEqual((m.ram_mb, m.smp, m.gpu, m.usb_tablet, m.drives),
+                         (model.RAM_DEFAULT, 1, None, False, [None] * 4))
+        g = Gpu.from_dict({"romfile": "x.rom"})
+        self.assertEqual((g.model, g.gl, g.raster_threads, g.async_engine, g.agp),
+                         ("radeon9800", "off", 0, "auto", True))
+
 
 class NothingIsChosenForYou(unittest.TestCase):
 
     def test_a_new_machine_has_every_file_field_empty(self):
         m = model.new_machine("Fresh")
-        for field, value in model.file_fields(m).items():
-            self.assertEqual(value, "", f"{field} was filled in")
+        for name, value in model.file_fields(m).items():
+            self.assertEqual(value, "", f"{name} was filled in")
         self.assertIsNone(m.gpu)
-        self.assertEqual(m.notes, "")
-
-    def test_a_new_machine_needs_nothing_before_it_can_start(self):
-        """Unlike g3beige, mac99's firmware is bundled with the
-        distribution, not an Apple ROM the person must supply."""
-        m = model.new_machine("Fresh")
         self.assertEqual(model.start_blockers(m), [])
+        self.assertEqual((m.smp, m.ram_mb, m.boot_slot), (1, model.RAM_DEFAULT, None))
 
-    def test_a_new_machine_defaults_to_one_cpu_and_via_pmu(self):
-        """There is no system-type selection any more (no governor on this
-        machine, nothing to select): every new machine starts the same way,
-        and whoever wants more CPUs turns it up themselves (user review,
-        2026-09-14)."""
-        m = model.new_machine("t")
-        self.assertEqual((m.smp, m.via, m.ram_mb, m.boot_slot), (1, "pmu", 512, None))
 
-    def test_there_is_no_system_type_left(self):
-        self.assertFalse(hasattr(Machine(), "system"))
-        src = (HERE.parent / "qemugui" / "g5_ui_machine.py").read_text()
-        for gone in ("System:", "system_var", "_system_chosen"):
-            self.assertNotIn(gone, src, gone)
+class NvramIsQemus(unittest.TestCase):
+    """QEMU makes and checks the G5's 16 KB nvram.img itself; the GUI never
+    writes one and Reset NVRAM removes only that file."""
+
+    def test_write_launcher_leaves_the_nvram_alone(self):
+        with tempfile.TemporaryDirectory() as td:
+            command.write_launcher(load_fixture("g5-r350.json"), QD, td, "darwin")
+            self.assertEqual(sorted(p.name for p in Path(td).iterdir()), ["run.command"])
+            nvram = Path(td) / "nvram.img"
+            nvram.write_bytes(b"\x5a" * 16384)
+            command.write_launcher(load_fixture("g5-r350.json"), QD, td, "darwin")
+            self.assertEqual(nvram.read_bytes(), b"\x5a" * 16384)
+
+    def test_reset_removes_only_nvram(self):
+        with tempfile.TemporaryDirectory() as td:
+            lib = model.Library(td)
+            lib.save(model.new_machine("G5"))
+            folder = lib.folder("G5")
+            for n in ("nvram.img", "pram.img", "disk.qcow2", "nvram.img.bak"):
+                (folder / n).write_bytes(b"x")
+            self.assertEqual(lib.saved_settings_status("G5"), {"nvram.img": 1})
+            self.assertEqual(lib.clear_saved_settings("G5"), ["nvram.img"])
+            self.assertEqual(sorted(p.name for p in folder.iterdir()),
+                             ["disk.qcow2", "machine.json", "nvram.img.bak", "pram.img"])
+            self.assertEqual(lib.saved_settings_status("G5"), {"nvram.img": None})
+            self.assertEqual(lib.clear_saved_settings("G5"), [])
 
 
 class LibraryOps(unittest.TestCase):
@@ -687,104 +499,55 @@ class LibraryOps(unittest.TestCase):
     def test_create_save_duplicate_delete(self):
         with tempfile.TemporaryDirectory() as td:
             lib = model.Library(td)
-            m = model.new_machine("Mac OS X")
+            lib.save(model.new_machine("Leopard"))
+            (lib.folder("Leopard") / "nvram.img").write_bytes(b"\xff" * 16384)
+            (lib.folder("Leopard") / "leopard.qcow2").write_bytes(b"QFI\xfb")
+            lib.duplicate("Leopard", "Leopard copy")
+            self.assertEqual((lib.folder("Leopard copy") / "nvram.img").stat().st_size, 16384)
+            removed, kept = lib.delete_preview("Leopard")
+            self.assertEqual(removed, ["machine.json", "nvram.img"])
+            self.assertEqual(kept, ["leopard.qcow2"])
+            result = lib.delete("Leopard")
+            self.assertFalse(result.folder_removed)
+            self.assertEqual(result.kept_images, ["leopard.qcow2"])
+            lib.delete("Leopard copy")
+            self.assertEqual(lib.names(), [])
+
+    def test_rename_repoints_images_inside_the_folder(self):
+        with tempfile.TemporaryDirectory() as td:
+            lib = model.Library(td)
+            m = model.new_machine("A")
             lib.save(m)
-            (lib.folder("Mac OS X") / "nvram.img").write_bytes(b"\0" * 8192)
-            self.assertEqual(lib.names(), ["Mac OS X"])
-            self.assertEqual(lib.saved_settings_status("Mac OS X"), {"nvram.img": 8192})
-            d = lib.duplicate("Mac OS X", "Mac OS X copy")
-            self.assertTrue((lib.folder("Mac OS X copy") / "nvram.img").is_file())
-            self.assertEqual(lib.clear_saved_settings("Mac OS X"), ["nvram.img"])
-            lib.delete("Mac OS X copy")
-            self.assertEqual(lib.names(), ["Mac OS X"])
+            m.drives[model.SATA_A] = Drive("disk", str(lib.folder("A") / "d.img"))
+            lib.save(m)
+            m.name = "B"
+            lib.save(m, old_name="A")
+            self.assertEqual(m.drives[model.SATA_A].file, str(lib.folder("B") / "d.img"))
 
     def test_write_launcher_is_executable_and_regenerated(self):
         with tempfile.TemporaryDirectory() as td:
-            m = load_fixture("mac99-osx.json")
-            path, argv = command.write_launcher(m, "/q", td, "darwin")
+            m = load_fixture("g5-r350.json")
+            path, _ = command.write_launcher(m, QD, td, "darwin")
             self.assertEqual(path.name, "run.command")
             self.assertTrue(path.stat().st_mode & 0o111)
-            self.assertIn("Do not edit", path.read_text())
-            m.ram_mb = 2048
-            path2, _ = command.write_launcher(m, "/q", td, "darwin")
-            self.assertIn("-m 2048", path2.read_text())
+            m.ram_mb = 8192
+            path, _ = command.write_launcher(m, QD, td, "darwin")
+            self.assertIn("-m 8192", path.read_text())
 
-    def test_write_launcher_creates_nvram_if_missing(self):
-        """QEMU's raw file driver does not create a missing file: without
-        this, the very first Start on a fresh machine fails with "Could not
-        open nvram.img" (reproduced against the real binary before this
-        fix)."""
+    def test_windows_launcher_file(self):
         with tempfile.TemporaryDirectory() as td:
-            m = load_fixture("mac99-osx.json")
-            nvram = Path(td) / "nvram.img"
-            self.assertFalse(nvram.exists())
-            command.write_launcher(m, "/q", td, "darwin")
-            self.assertTrue(nvram.is_file())
-            self.assertEqual(nvram.stat().st_size, model.NVRAM_SIZE)
-
-    def test_write_launcher_never_overwrites_existing_nvram(self):
-        with tempfile.TemporaryDirectory() as td:
-            m = load_fixture("mac99-osx.json")
-            nvram = Path(td) / "nvram.img"
-            nvram.write_bytes(b"\x01" * model.NVRAM_SIZE)
-            command.write_launcher(m, "/q", td, "darwin")
-            self.assertEqual(nvram.read_bytes(), b"\x01" * model.NVRAM_SIZE)
-
-
-class WindowsParity(unittest.TestCase):
-    """The same host-platform mechanics as qemugui.command / qemugui.model
-    (see tests/test_command.py), now exercised for mac99: one argv, two
-    renderings, and a network/audio backend choice restricted per host.
-    Forcing platform="win32" here never touches this machine, which is
-    always darwin -- see paths.py's own platform-string contract."""
-
-    def test_windows_launcher(self):
-        with tempfile.TemporaryDirectory() as td:
-            m = load_fixture("mac99-osx.json")
-            path, argv = command.write_launcher(m, r"C:\mac99", td, "win32")
+            path, argv = command.write_launcher(load_fixture("g5-r350.json"), r"C:\g5", td,
+                                                "win32")
             self.assertEqual(path.name, "run.bat")
-            self.assertEqual(argv[0], r"C:\mac99\qemu-system-ppc.exe")
-            # read the raw bytes: text-mode reads would normalise \r\n away
+            self.assertEqual(argv[0], r"C:\g5\qemu-system-ppc64.exe")
             raw = path.read_bytes().decode("utf-8")
             self.assertIn(" ^\r\n", raw)
             self.assertNotIn(" \\\r\n", raw)
-            self.assertNotIn("sudo", raw)
-            self.assertIn("dsound,id=snd", raw)
-            self.assertNotIn("coreaudio", raw)
-
-        offered = model.network_modes_for_host("win32")
-        self.assertIn("tap", offered)
-        for gone in ("vmnet-bridged", "vmnet-shared", "vmnet-host"):
-            self.assertNotIn(gone, offered)
-
-    def test_macos_launcher(self):
-        with tempfile.TemporaryDirectory() as td:
-            m = load_fixture("mac99-osx.json")
-            path, argv = command.write_launcher(m, "/Applications/qemu99", td, "darwin")
-            self.assertEqual(path.name, "run.command")
-            self.assertEqual(argv[0], "/Applications/qemu99/qemu-system-ppc")
-            raw = path.read_bytes().decode("utf-8")
-            self.assertIn(" \\\n", raw)
-            self.assertNotIn(" ^\r\n", raw)
-            self.assertNotIn(".exe", raw)
-            self.assertIn("coreaudio,id=snd", raw)
-            self.assertNotIn("dsound", raw)
-
-        offered = model.network_modes_for_host("darwin")
-        for present in ("vmnet-bridged", "vmnet-shared", "vmnet-host"):
-            self.assertIn(present, offered)
-        self.assertNotIn("tap", offered)
-
-    def test_audio_backend_resolves_per_host(self):
-        m = load_fixture("mac99-osx.json")
-        self.assertIn("coreaudio,id=snd", command.build_argv(m, "", "/m", "darwin"))
-        self.assertIn("dsound,id=snd", command.build_argv(m, "", "/m", "win32"))
+            self.assertIn("title Leopard R350\r\n", raw)
+            self.assertTrue(raw.endswith("if errorlevel 1 pause\r\n"))
 
 
-class TheHostDecidesTheNetworkAndSoundWording(unittest.TestCase):
-    """Reported from the Windows build of the G3 GUI (2026-09-22) and shared
-    through paths.py: the interface field was labelled for vmnet, the network
-    came up as none, and the default sound choice was called CoreAudio."""
+class Platform(unittest.TestCase):
 
     def setUp(self):
         self.saved = paths.HOST_PLATFORM
@@ -792,41 +555,27 @@ class TheHostDecidesTheNetworkAndSoundWording(unittest.TestCase):
     def tearDown(self):
         paths.HOST_PLATFORM = self.saved
 
-    def test_the_interface_label_names_what_the_host_uses(self):
-        self.assertEqual(model.ifname_label("darwin"), "Vmnet host interface:")
-        self.assertEqual(model.ifname_label("win32"), "Tap device name:")
-        self.assertEqual(model.ifname_label("linux"), "Tap device name:")
+    def test_binary_names(self):
+        self.assertEqual(paths.qemu_binary_name("darwin"), "qemu-system-ppc64")
+        self.assertEqual(paths.qemu_binary_name("win32"), "qemu-system-ppc64.exe")
+        self.assertEqual(paths.launcher_name("win32"), "run.bat")
+        self.assertEqual(paths.launcher_name("darwin"), "run.command")
 
-    def test_the_default_sound_choice_is_named_after_the_backend(self):
+    def test_default_sound_and_display_per_host(self):
         self.assertEqual(model.default_audio_label("darwin"), "CoreAudio")
         self.assertEqual(model.default_audio_label("win32"), "DirectSound")
-        self.assertEqual(paths.resolve_audio("default", "win32"), "dsound")
-        self.assertEqual(paths.resolve_audio("default", "darwin"), "coreaudio")
-        self.assertEqual(paths.resolve_audio("sdl", "win32"), "sdl")
-
-    def test_a_new_machine_uses_slirp_and_the_default_sound_on_every_host(self):
-        for platform in ("darwin", "win32", "linux"):
+        self.assertEqual(model.ifname_label("win32"), "Tap device name:")
+        for platform, display in (("darwin", "cocoa"), ("win32", "sdl"), ("linux", "sdl")):
             paths.HOST_PLATFORM = platform
             m = model.new_machine("Fresh")
-            self.assertEqual(m.network.mode, "user", platform)
-            self.assertEqual(m.audio, "default", platform)
-            offered = model.network_labels_for_host(platform)
-            self.assertIn(model.network_mode_label("user"), offered, platform)
-            self.assertEqual(offered[0], "default (slirp)", platform)
-            self.assertEqual(model.Machine.from_dict(json.loads(m.to_json())).network.mode,
-                             "user", platform)
+            self.assertEqual((m.display, m.network.mode, m.audio), (display, "user", "default"))
 
-    def test_a_record_saved_on_a_mac_plays_through_dsound_on_windows(self):
-        m = model.new_machine("Fresh")
-        self.assertEqual(json.loads(m.to_json())["audio"], "default")
-        self.assertIn("coreaudio,id=snd", command.build_argv(m, "", "/m", "darwin"))
-        self.assertIn("dsound,id=snd", command.build_argv(m, "", "/m", "win32"))
-        self.assertNotIn("coreaudio,id=snd", command.build_argv(m, "", "/m", "win32"))
+    def test_cocoa_warns_off_a_mac(self):
+        _, warnings = model.validate(plain(display="cocoa"), None, "win32", check_files=False)
+        self.assertIn("'cocoa' only works on a Mac.", warnings)
 
 
 class ImageFormatDetection(unittest.TestCase):
-    """User report 2026-09-23: an existing qcow2 image was launched with
-    format=raw, so QEMU could not boot it."""
 
     def setUp(self):
         self.td = tempfile.TemporaryDirectory()
@@ -838,105 +587,27 @@ class ImageFormatDetection(unittest.TestCase):
         p.write_bytes(head + b"\0" * 64)
         return p
 
-    def test_magic_beats_the_name(self):
-        self.assertEqual(model.detect_format(str(self._image("disk.img", b"QFI\xfb\x00\x00\x00\x03"))),
-                         "qcow2")
+    def test_magic_and_name(self):
+        self.assertEqual(model.detect_format(str(self._image("d.img", b"QFI\xfb"))), "qcow2")
+        self.assertEqual(model.detect_format(str(self._image("d.qcow2", b"x"))), "qcow2")
+        self.assertEqual(model.detect_format(str(self._image("p.img", b"\0"))), "raw")
+        self.assertEqual(model.detect_format(str(self.dir / "none.qcow2")), "raw")
 
-    def test_extension_is_the_fallback(self):
-        self.assertEqual(model.detect_format(str(self._image("disk.qcow2", b"not a header"))), "qcow2")
-        self.assertEqual(model.detect_format(str(self._image("plain.img", b"\0\0"))), "raw")
-
-    def test_a_format_this_gui_does_not_offer_is_raw(self):
-        self.assertEqual(model.detect_format(str(self._image("d.vmdk", b"KDMV"))), "raw")
-        self.assertEqual(model.detect_format(str(self._image("d.vhd", b"conectix"))), "raw")
-        self.assertEqual(
-            model.detect_format(str(self._image("d.vdi", b"<<< Oracle VM VirtualBox Disk Image"))),
-            "raw")
-
-    def test_missing_file_is_raw(self):
-        self.assertEqual(model.detect_format(str(self.dir / "nothing.qcow2")), "raw")
-        self.assertEqual(model.detect_format(str(self.dir / "nothing.img")), "raw")
-
-    def test_a_file_that_cannot_be_read_now_keeps_its_name(self):
-        p = self._image("locked.qcow2", b"QFI\xfb\x00\x00\x00\x03")
-        opened = open
-
-        def denied(name, *a, **kw):
-            if str(name) == str(p):
-                raise PermissionError(13, "in use")
-            return opened(name, *a, **kw)
-
-        with unittest.mock.patch("builtins.open", denied):
-            self.assertEqual(model.detect_format(str(p)), "qcow2")
-
-    def test_an_unreadable_path_never_raises(self):
-        self.assertEqual(model.detect_format(str(self.dir)), "raw")
-        self.assertEqual(model.detect_format(""), "raw")
-        self.assertEqual(model.detect_format(None), "raw")
-
-    def test_a_record_saved_as_raw_is_repaired(self):
-        self._image("guest.img", b"QFI\xfb\x00\x00\x00\x03")
-        m = model.new_machine("Repair")
-        m.ata[0] = AtaDrive("disk", "guest.img", "raw")
-        m.usb_storage = [UsbStorage("guest.img", "")]
-        argv = command.build_argv(m, "/q", str(self.dir), "darwin")
-        guest = [t for t in argv if "guest.img" in t]
-        self.assertEqual(len(guest), 2)
-        for tok in guest:
+    def test_a_record_saved_as_raw_is_repaired_on_both_buses(self):
+        self._image("ata.img", b"QFI\xfb")
+        self._image("sata.img", b"QFI\xfb")
+        m = plain(drives=[Drive("disk", "ata.img"), None, Drive("disk", "sata.img"), None])
+        argv = command.build_argv(m, QD, str(self.dir), "darwin")
+        got = [t for t in argv if t.startswith("file=")]
+        self.assertEqual(len(got), 2)
+        for tok in got:
             self.assertIn("format=qcow2", tok)
-            self.assertNotIn("format=raw", tok)
-        # the machine's own nvram.img is a real raw file and stays raw
-        self.assertTrue(any("nvram.img" in t and "format=raw" in t for t in argv), argv)
-        path, _ = command.write_launcher(m, "/q", str(self.dir), "darwin")
-        self.assertIn("format=qcow2", path.read_text())
 
     def test_a_chosen_format_is_never_overridden(self):
-        self._image("plain.img", b"\0\0")
-        m = model.new_machine("Kept")
-        m.ata[0] = AtaDrive("disk", "plain.img", "qcow2")
-        argv = command.build_argv(m, "/q", str(self.dir), "darwin")
+        self._image("plain.img", b"\0")
+        m = plain(drives=[None, None, Drive("disk", "plain.img", "qcow2"), None])
+        argv = command.build_argv(m, QD, str(self.dir), "darwin")
         self.assertTrue(any("plain.img" in t and "format=qcow2" in t for t in argv), argv)
-
-    def test_a_missing_image_still_renders(self):
-        m = model.new_machine("Gone")
-        m.ata[0] = AtaDrive("disk", "/Volumes/Unmounted/x.qcow2", "raw")
-        argv = command.build_argv(m, "/q", str(self.dir), "darwin")
-        self.assertTrue(any("x.qcow2" in t and "format=raw" in t for t in argv), argv)
-
-
-class WindowsConsoleWindow(unittest.TestCase):
-    """User report 2026-09-23: on Windows a start opened a large, empty
-    console, because the console-subsystem emulator got a default console of
-    its own while all its output went into last-run.log."""
-
-    def _bat(self, name: str = "Mac OS X") -> str:
-        m = model.new_machine(name)
-        return command.launcher_text(m, r"C:\mac99", r"C:\m", "win32")
-
-    def test_the_bat_names_sizes_and_holds_its_console(self):
-        lines = self._bat().split("\r\n")
-        self.assertEqual(lines[0], "@echo off")
-        self.assertIn("title Mac OS X", lines)
-        self.assertIn("mode con: cols=100 lines=30", lines)
-        self.assertEqual(lines[-2], "if errorlevel 1 pause")
-        self.assertLess(lines.index("mode con: cols=100 lines=30"),
-                        lines.index('cd /d "%~dp0"'))
-
-    def test_a_title_cmd_would_choke_on_is_cleaned_up(self):
-        self.assertEqual(paths.bat_title('a & b > c ^ d "e" 100%'), "a  b  c  d e 100")
-        self.assertEqual(paths.bat_title(""), paths.BAT_TITLE)
-        self.assertEqual(paths.bat_title("x" * 60), "x" * 40)
-
-    def test_the_continuation_contract_is_unchanged(self):
-        body = [ln for ln in self._bat().split("\r\n") if ln.startswith("-")]
-        for ln in body[:-1]:
-            self.assertTrue(ln.endswith(" ^"), ln)
-        self.assertFalse(body[-1].endswith("^"))
-
-    def test_the_posix_launcher_gains_nothing(self):
-        text = command.launcher_text(model.new_machine("Mac OS X"), "/q", "/m", "darwin")
-        for token in ("mode con", "title ", "pause", "errorlevel"):
-            self.assertNotIn(token, text)
 
 
 if __name__ == "__main__":

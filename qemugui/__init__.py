@@ -1,5 +1,5 @@
-"""Qemu-system-ppc Mac99 openbios GUI: a portable launcher for the QEMU
-mac99 machine.
+"""Qemu-system-ppc64 G5 GUI: a portable launcher for the QEMU PowerMac7,3
+(G5) machine.
 
 Standard library only. ``g5_command``, ``g5_model`` and ``paths``
 import no Tk and can be used headless (that is what the tests do).

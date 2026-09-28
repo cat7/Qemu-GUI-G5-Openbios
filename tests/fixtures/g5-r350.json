@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "name": "Leopard R350",
+  "ram_mb": 4096,
+  "smp": 2,
+  "display": "cocoa",
+  "vnc": "",
+  "audio": "default",
+  "usb_audio": true,
+  "usb_tablet": false,
+  "gpu": {
+    "model": "radeon9800",
+    "romfile": "ati_oem_9800xt_123_agp_full.rom",
+    "gl": "fast",
+    "raster_threads": 4,
+    "async_engine": "auto",
+    "agp": true
+  },
+  "network": {
+    "mode": "user",
+    "mac": "00:05:02:12:34:56"
+  },
+  "boot_slot": 2,
+  "drives": [
+    {
+      "kind": "cdrom",
+      "file": "/images/MacOSX-10.5.iso",
+      "format": "raw"
+    },
+    null,
+    {
+      "kind": "disk",
+      "file": "/images/leopard.qcow2",
+      "format": "qcow2"
+    },
+    null
+  ],
+  "prom_env": {
+    "auto_boot": true,
+    "boot_device": "",
+    "boot_args": ""
+  },
+  "rtc_base": "",
+  "extra_args": "",
+  "notes": ""
+}

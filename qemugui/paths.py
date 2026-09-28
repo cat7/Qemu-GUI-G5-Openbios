@@ -2,7 +2,7 @@
 beside it, and the Machines folder beside it.
 
 There is no configurable QEMU folder and no configurable machine library.
-This program is a companion to one copy of ``qemu-system-ppc``: it lives in
+This program is a companion to one copy of ``qemu-system-ppc64``: it lives in
 the same folder as that program, and keeps its machines in a ``Machines``
 folder next to itself.
 
@@ -19,7 +19,8 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
-APP_NAME = "Qemu-system-ppc Mac99 openbios GUI"
+APP_NAME = "Qemu-system-ppc64 G5 GUI"
+QEMU_BINARY = "qemu-system-ppc64"
 HOST_PLATFORM = sys.platform  # "darwin" | "win32" | "linux"
 
 MACHINES_DIR_NAME = "Machines"
@@ -45,7 +46,7 @@ def resolve_install_dir(*, frozen: bool, executable: str, source_root: str) -> P
 
     * running from source -- the folder holding the entry script;
     * frozen inside a macOS application bundle -- ``sys.executable`` is
-      ``.../Qemu-system-ppc GUI.app/Contents/MacOS/Qemu-system-ppc GUI``, several levels below the
+      ``.../<name>.app/Contents/MacOS/<name>``, several levels below the
       folder the bundle itself sits in, so walk up out of the ``.app``;
     * frozen as a plain executable (Windows, Linux) -- the folder holding
       the executable.
@@ -87,7 +88,7 @@ def is_windows(platform: str = HOST_PLATFORM) -> bool:
 
 
 def qemu_binary_name(platform: str = HOST_PLATFORM) -> str:
-    return "qemu-system-ppc.exe" if is_windows(platform) else "qemu-system-ppc"
+    return QEMU_BINARY + (".exe" if is_windows(platform) else "")
 
 
 def qemu_img_name(platform: str = HOST_PLATFORM) -> str:
@@ -127,7 +128,7 @@ def join_path(base: str, name: str, platform: str = HOST_PLATFORM) -> str:
 
 # ------------------------------------------------------- display defaults
 #
-# One home for the g3beige and mac99 GUIs both: neither machine record cares
+# One home for every machine family: no machine record cares
 # which host it is edited on, but the choices offered while editing, and the
 # choice a brand new record starts with, do.
 
@@ -369,7 +370,7 @@ def bat_quote_extra(token: str) -> str:
 # The GUI is a windowed build, so Windows gives the emulator a fresh console of
 # its own: name it, cut it down to a readable size, and hold it open on a
 # failure long enough to read what went wrong.
-BAT_TITLE = "Qemu-system-ppc"
+BAT_TITLE = QEMU_BINARY
 BAT_MODE = "mode con: cols=100 lines=30"
 BAT_PAUSE = "if errorlevel 1 pause"
 
