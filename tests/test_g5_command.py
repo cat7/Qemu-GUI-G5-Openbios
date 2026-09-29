@@ -166,6 +166,12 @@ class GoldenCommandLines(unittest.TestCase):
         self.assertEqual(body[-1], "-prom-env 'auto-boot?=true'")
         self.assertIn("-device ide-hd,bus=sata.0,drive=sata0 \\", lines)
 
+    def test_macos_prom_env_values_quoted(self):
+        m = load_fixture("g5-r350.json")
+        m.prom_env.boot_args = "-v"
+        lines = command.launcher_text(m, QD, MD, "darwin").splitlines()
+        self.assertIn("-prom-env 'boot-args=-v'", lines)
+
 
 class Graphics(unittest.TestCase):
 

@@ -20,9 +20,8 @@ Facts the record encodes (qemu ``powermac73``, ``hw/ppc/mac_newworld.c``):
   still the default.
 * NVRAM. QEMU keeps it in ``nvram.img`` (16 KB) in its working directory,
   the machine folder, creating it when absent; a file of another size is
-  not used. ``-prom-env`` values are written only when the NVRAM is
-  created or reformatted, so they apply to a fresh NVRAM: the first start
-  and the first start after Reset NVRAM. There is no PRAM file.
+  not used. ``-prom-env`` values are set in it at every start, over what it
+  holds; a variable not given keeps its saved value. There is no PRAM file.
 * Sound. The K2's I2S sound takes ``-global macio-newworld.audiodev=``;
   ``usb-audio`` needs a backend of its own.
 * Graphics. With no card chosen the machine's own std VGA runs. The ATI
@@ -235,7 +234,7 @@ class Network:
 
 @dataclass
 class PromEnv:
-    """Open Firmware variables, written into a fresh NVRAM only (see the
+    """Open Firmware variables, set in the NVRAM at every start (see the
     module docstring)."""
     auto_boot: bool = True
     boot_device: str = ""

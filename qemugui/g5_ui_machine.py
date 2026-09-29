@@ -449,8 +449,8 @@ class MachineEditor(tk.Toplevel):
         self.boot_args_var = tk.StringVar()
         ttk.Entry(f, textvariable=self.boot_args_var, width=30).grid(
             row=3, column=1, sticky="w", pady=(6, 0))
-        ttk.Label(f, text="These go into the NVRAM when it is made: on the first start, "
-                          "and on the first start after Reset NVRAM.",
+        ttk.Label(f, text="These are set in the NVRAM at every start. "
+                          "An empty field keeps what the NVRAM holds.",
                   foreground=GREY).grid(row=4, column=0, columnspan=3, sticky="w")
         ttk.Label(f, text="Date and time:").grid(row=5, column=0, sticky="w", pady=(6, 0))
         self.rtc_base_var = tk.StringVar()

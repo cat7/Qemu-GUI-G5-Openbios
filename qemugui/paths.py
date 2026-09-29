@@ -309,14 +309,17 @@ def quote_extra(token: str) -> str:
     return shlex.quote(token)
 
 
-def render_groups(argv: list[str], quote, quote_extra, extra: int) -> list[str]:
-    """One line per option; the last *extra* tokens of argv are quoted with
-    *quote_extra* instead of *quote*."""
+def render_groups(argv: list[str], quote, quote_extra, extra: int,
+                  quoted_values: tuple[str, ...] = ()) -> list[str]:
+    """One line per option; the last *extra* tokens of argv, and the values of
+    the options in *quoted_values*, are quoted with *quote_extra* instead of
+    *quote*."""
     plain = len(argv) - extra
     out: list[str] = []
     n = 1
     for g in group_options(argv):
-        out.append(" ".join((quote_extra if n + j >= plain else quote)(t) for j, t in enumerate(g)))
+        out.append(" ".join((quote_extra if n + j >= plain or (j and g[0] in quoted_values)
+                             else quote)(t) for j, t in enumerate(g)))
         n += len(g)
     return out
 
@@ -344,7 +347,7 @@ def render_shell(argv: list[str], header_note: str, owned_files: tuple[str, ...]
     if sudo:
         lines += [SUDO_KEEPALIVE, ""]
     lines.append(("sudo " if sudo else "") + shlex.quote(argv[0]) + " \\")
-    body = render_groups(argv, shlex.quote, quote_extra, extra)
+    body = render_groups(argv, shlex.quote, quote_extra, extra, ("-prom-env",))
     for i, ln in enumerate(body):
         cont = " \\" if i < len(body) - 1 else ""
         lines.append(ln + cont)
