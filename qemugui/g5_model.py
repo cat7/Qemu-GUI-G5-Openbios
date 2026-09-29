@@ -120,7 +120,7 @@ AUDIO_MODES = ("default", "sdl", "none")
 RAM_CHOICES = (1024, 2048, 3072, 4096, 6144, 8192, 16384)
 RAM_MIN, RAM_MAX = 256, 16384
 RAM_DEFAULT = 2048
-SMP_MIN, SMP_MAX = 1, 2
+SMP_MIN, SMP_MAX = 1, 4
 
 GPU_MODELS = ("radeon9800", "rv100")
 GPU_LABELS = {"radeon9800": "ATI Radeon 9800", "rv100": "ATI Radeon 7000 (RV100)"}
