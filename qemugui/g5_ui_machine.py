@@ -14,8 +14,9 @@ from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 from . import paths
+from . import usbhost
 from . import g5_model as model
-from .g5_model import Machine, Drive, Gpu, Network, PromEnv, Share
+from .g5_model import Machine, Drive, Gpu, Network, PromEnv, Share, UsbHostDevice
 from .g5_ui_dialogs import show_validation, refresh_native_style, CreateDiskDialog
 
 KIND_LABELS = {"": "Empty", "disk": "Hard disk", "cdrom": "CD"}
@@ -174,6 +175,8 @@ class MachineEditor(tk.Toplevel):
         self._build_drives()
         self._build_net_audio()
         self._build_share()
+        if paths.HOST_PLATFORM == "darwin":
+            self._build_usb_host()
         self._build_advanced()
 
         bar = ttk.Frame(self)
@@ -432,6 +435,61 @@ class MachineEditor(tk.Toplevel):
         if d:
             self.share_folder_var.set(d)
 
+    def _build_usb_host(self):
+        f = self._tab("USB devices")
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(1, weight=1)
+        ttk.Label(f, text="Host USB devices this Mac takes while it runs. With any device "
+                          "ticked the machine starts with sudo and asks for your password. "
+                          "High-speed devices go on the USB 2.0 bus, others on the second "
+                          "USB 1.1 bus.",
+                  foreground=GREY, wraplength=EDITOR_WIDTH - 60, justify="left").grid(
+            row=0, column=0, sticky="ew", pady=(0, 6))
+        self.usb_host_list = ttk.Frame(f)
+        self.usb_host_list.grid(row=1, column=0, sticky="nsew")
+        self.usb_host_vars: dict[str, tk.BooleanVar] = {}
+        self.usb_host_info: dict[str, UsbHostDevice] = {}
+        self.usb_host_boxes: dict[str, ttk.Checkbutton] = {}
+
+    def _fill_usb_host(self, chosen: list[UsbHostDevice]):
+        for w in self.usb_host_list.winfo_children():
+            w.destroy()
+        picked = {u.id: u for u in chosen}
+        plugged: dict[str, usbhost.HostDevice] = {}
+        for d in usbhost.host_devices():
+            plugged.setdefault(d.id, d)
+        self.usb_host_vars = {}
+        self.usb_host_info = {}
+        self.usb_host_boxes = {}
+        rows = list(plugged) + [i for i in picked if i not in plugged]
+        if not rows:
+            ttk.Label(self.usb_host_list, text="No USB device is plugged in.",
+                      foreground=GREY).grid(row=0, column=0, sticky="w")
+        for r, dev_id in enumerate(rows):
+            d = plugged.get(dev_id)
+            if d is not None:
+                name = d.name or (picked[dev_id].name if dev_id in picked else "")
+                info = UsbHostDevice(dev_id, name, d.speed)
+                text = f"{name or d.label}  ({dev_id}, {d.speed or '?'} speed)"
+                if not d.passable:
+                    text += f" -- {d.reason}"
+            else:
+                info = picked[dev_id]
+                text = (f"{info.name or 'USB device ' + dev_id}  ({dev_id}, "
+                        f"{info.speed or '?'} speed) -- not connected")
+            refused = d is not None and not d.passable
+            var = tk.BooleanVar(value=dev_id in picked and not refused)
+            box = ttk.Checkbutton(self.usb_host_list, text=text, variable=var)
+            box.grid(row=r, column=0, sticky="w")
+            if refused:
+                box.state(["disabled"])
+            self.usb_host_vars[dev_id] = var
+            self.usb_host_info[dev_id] = info
+            self.usb_host_boxes[dev_id] = box
+
+    def _collect_usb_host(self) -> list[UsbHostDevice]:
+        return [self.usb_host_info[i] for i, v in self.usb_host_vars.items() if v.get()]
+
     def _build_advanced(self):
         f = self._tab("Advanced")
         f.columnconfigure(1, weight=1)
@@ -504,6 +562,8 @@ class MachineEditor(tk.Toplevel):
         self.boot_args_var.set(m.prom_env.boot_args)
         self.rtc_base_var.set(m.rtc_base)
         self.extra_var.set(m.extra_args)
+        if hasattr(self, "usb_host_list"):
+            self._fill_usb_host(m.usb_host_devices)
 
     def collect(self) -> Machine:
         m = self.machine.copy()
@@ -542,6 +602,8 @@ class MachineEditor(tk.Toplevel):
                              self.boot_args_var.get().strip())
         m.rtc_base = self.rtc_base_var.get().strip()
         m.extra_args = self.extra_var.get().strip()
+        if hasattr(self, "usb_host_list"):
+            m.usb_host_devices = self._collect_usb_host()
         return m
 
     def save(self):

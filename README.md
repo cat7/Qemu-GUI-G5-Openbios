@@ -25,6 +25,18 @@ default (slirp) network the Mac reaches it at `ftp://10.0.2.2/` (`:2121`
 when port 21 is taken); with vmnet choose "All interfaces", set a
 password, and use the host's own address.
 
+## Host USB devices (macOS)
+
+A machine can use USB devices plugged into the Mac (a camera, a DVD
+writer): tick them in the machine's settings, USB devices tab. QEMU can
+take a device from macOS only as root, so a machine with devices ticked
+starts with `sudo` and asks for your password in Terminal, as vmnet does.
+High-speed devices go on the USB 2.0 bus, others on the second USB 1.1
+bus; a device that is not plugged in at start is taken when it is plugged
+in. Keyboards, mice and disks with a mounted volume are never offered (a
+DVD drive with a mounted disc is fine). A device goes back to macOS when
+the machine quits.
+
 ## Build on macOS
 
 With the python.org framework Python (Homebrew's Python has no tkinter):

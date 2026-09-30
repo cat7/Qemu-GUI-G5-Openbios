@@ -11,6 +11,7 @@ from . import paths
 from .paths import (qopt, split_extra_args, group_options, bat_quote, drive_format,
                     SUDO_KEEPALIVE)  # re-exported
 from . import g5_model as model
+from . import usbhost
 from .g5_model import Machine
 
 HEADER_NOTE = f"Written by {paths.APP_NAME}. Do not edit."
@@ -42,7 +43,10 @@ def nic_option(net) -> str:
 
 
 def needs_sudo(m: Machine, platform: str = paths.HOST_PLATFORM) -> bool:
-    return paths.sudo_applies(m.network.needs_sudo, platform)
+    """vmnet, and QEMU's usb-host, which takes a device from macOS only as
+    root."""
+    usb = platform == "darwin" and bool(m.usb_host_devices)
+    return paths.sudo_applies(m.network.needs_sudo or usb, platform)
 
 
 def prom_env_tokens(m: Machine) -> list[str]:
@@ -122,6 +126,8 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     argv += ["-nic", nic_option(m.network)]
     argv += drive_tokens(m, machine_dir, platform)
     argv += prom_env_tokens(m)
+    if platform == "darwin":
+        argv += usbhost.qemu_tokens([(u.id, u.speed) for u in m.usb_host_devices])
     if m.rtc_base.strip():
         argv += ["-rtc", f"base={m.rtc_base.strip()}"]
     argv += extra
