@@ -135,9 +135,13 @@ class Record(unittest.TestCase):
         errors, _w = model.validate(Machine(name="L", usb_host_devices=[UsbHostDevice("zz")]),
                                     None, "darwin", check_files=False)
         self.assertTrue(any("zz" in e for e in errors))
+        for platform in ("darwin", "win32"):
+            _e, warnings = model.validate(Machine(name="L", usb_host_devices=[
+                UsbHostDevice("046d:0990")]), None, platform, check_files=False)
+            self.assertFalse(any("only work on" in w for w in warnings), platform)
         _e, warnings = model.validate(Machine(name="L", usb_host_devices=[
-            UsbHostDevice("046d:0990")]), None, "win32", check_files=False)
-        self.assertTrue(any("only work on a Mac" in w for w in warnings))
+            UsbHostDevice("046d:0990")]), None, "linux", check_files=False)
+        self.assertTrue(any("only work on a Mac or on Windows" in w for w in warnings))
 
 
 QD = "/Applications/qemu-system-ppc64-G5"
@@ -177,10 +181,22 @@ class Launcher(unittest.TestCase):
         self.assertFalse(command.needs_sudo(m, "darwin"))
         self.assertNotIn("usb-host", " ".join(command.build_argv(m, QD, MD, "darwin")))
 
-    def test_windows_has_none(self):
+    def test_windows_unelevated_lines(self):
         m = self.machine()
         self.assertFalse(command.needs_sudo(m, "win32"))
-        self.assertNotIn("usb-host", " ".join(command.build_argv(m, r"C:\q", r"C:\m", "win32")))
+        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32")
+        i = argv.index("usb-host,vendorid=0x0e8d,productid=0x1887,bus=usb-bus.2")
+        self.assertEqual(argv[i - 1], "-device")
+        self.assertIn("usb-host,vendorid=0x0a12,productid=0x0001,bus=usb-bus.1", argv)
+        text = command.launcher_text(m, r"C:\q", r"C:\m", "win32")
+        self.assertIn('"usb-host,vendorid=0x0e8d,productid=0x1887,bus=usb-bus.2" ^', text)
+        self.assertIn('"usb-host,vendorid=0x0a12,productid=0x0001,bus=usb-bus.1" ^', text)
+        for word in ("sudo", "runas", "winusb-switch"):
+            self.assertNotIn(word, text)
+
+    def test_linux_has_none(self):
+        m = self.machine()
+        self.assertNotIn("usb-host", " ".join(command.build_argv(m, "/q", "/m", "linux")))
 
 
 def _tk_available():
@@ -257,8 +273,8 @@ class EditorTab(unittest.TestCase):
         self.assertEqual(ed.collect().usb_host_devices,
                          [UsbHostDevice("046d:0990", "QuickCam", "high")])
 
-    def test_no_tab_off_the_mac(self):
-        paths.HOST_PLATFORM = "win32"
+    def test_no_tab_on_linux(self):
+        paths.HOST_PLATFORM = "linux"
         m = Machine(name="t", usb_host_devices=[UsbHostDevice("0e8d:1887", "DVD", "high")])
         ed = self.editor(m)
         self.assertFalse(hasattr(ed, "usb_host_vars"))

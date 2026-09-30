@@ -126,7 +126,8 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     argv += ["-nic", nic_option(m.network)]
     argv += drive_tokens(m, machine_dir, platform)
     argv += prom_env_tokens(m)
-    if platform == "darwin":
+    if platform == "darwin" or paths.is_windows(platform):
+        # Windows: no elevation; QEMU gets only devices on WinUSB
         argv += usbhost.qemu_tokens([(u.id, u.speed) for u in m.usb_host_devices])
     if m.rtc_base.strip():
         argv += ["-rtc", f"base={m.rtc_base.strip()}"]

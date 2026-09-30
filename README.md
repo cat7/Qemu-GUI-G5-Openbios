@@ -37,6 +37,13 @@ in. Keyboards, mice and disks with a mounted volume are never offered (a
 DVD drive with a mounted disc is fine). A device goes back to macOS when
 the machine quits.
 
+## Host USB devices (Windows)
+
+QEMU can use a device only while it is on Windows' WinUSB driver. In the
+USB devices tab, Give to QEMU moves it there and Give back to Windows
+returns it (one administrator prompt each; `winusb-switch.exe` must sit
+next to `qemu-system-ppc64.exe`). QEMU itself runs without elevation.
+
 ## Build on macOS
 
 With the python.org framework Python (Homebrew's Python has no tkinter):

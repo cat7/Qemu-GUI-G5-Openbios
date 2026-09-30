@@ -32,7 +32,9 @@ Facts the record encodes (qemu ``powermac73``, ``hw/ppc/mac_newworld.c``):
   QEMU to run as root (the launcher uses sudo, as for vmnet): high- and
   super-speed devices on the EHCI (``usb-bus.2``, high speed only), others
   on the empty second OHCI (``usb-bus.1``), by the speed saved with the
-  device. macOS only.
+  device. macOS, and Windows, where QEMU runs unelevated and opens only a
+  device that is on Windows' WinUSB driver (``winusb-switch.exe`` moves it
+  there and back).
 """
 
 from __future__ import annotations
@@ -536,8 +538,8 @@ def validate(m: Machine, qemu_dir: str | None, platform: str = paths.HOST_PLATFO
     for u in m.usb_host_devices:
         if not USB_ID_RE.match(u.id):
             errors.append(f"'{u.id}' is not a USB device id like 046d:0990.")
-    if m.usb_host_devices and platform != "darwin":
-        warnings.append("Host USB devices only work on a Mac.")
+    if m.usb_host_devices and platform != "darwin" and not paths.is_windows(platform):
+        warnings.append("Host USB devices only work on a Mac or on Windows.")
 
     if check_files:
         qd = qemu_dir or ""
