@@ -2,11 +2,12 @@
  * winusb-switch: put one USB device on Windows' inbox WinUSB driver
  * (%WINDIR%\INF\winusb.inf, class USBDevice) and give it back.
  *
- *   winusb-switch list
- *   winusb-switch bind VVVV:PPPP      (administrator)
- *   winusb-switch unbind VVVV:PPPP    (administrator)
+ *   winusb-switch list [--out FILE]
+ *   winusb-switch bind VVVV:PPPP [--out FILE]      (administrator)
+ *   winusb-switch unbind VVVV:PPPP [--out FILE]    (administrator)
  *
- * stdout: one JSON object per line.
+ * stdout: one JSON object per line; --out writes the same lines to FILE
+ * (an elevated run's stdout cannot be read by the program that started it).
  * Exit: 0 done, 3010 done but the device must be replugged (or Windows
  * restarted) to finish, 1 failed, 2 usage, 3 refused, 4 not elevated,
  * 5 in use (a program holds the device; nothing changed).
@@ -28,6 +29,8 @@
 #include <windows.h>
 #include <setupapi.h>
 #include <cfgmgr32.h>
+#include <winioctl.h>
+#include <usbioctl.h>
 #include <fcntl.h>
 #include <io.h>
 #include <stdio.h>
@@ -76,7 +79,14 @@ static const DEVPROPKEY PK_BUSDESC = {
 
 #define WINUSB_HWID L"USB\\MS_COMP_WINUSB"
 
+/* GUID_DEVINTERFACE_USB_HUB */
+static const GUID HUB_INTERFACE = {
+    0xf18a0e88, 0xc30c, 0x11d0,
+    { 0x88, 0x15, 0x00, 0xa0, 0xc9, 0x06, 0xbe, 0xd8 } };
+
 /* ---- output ------------------------------------------------------------ */
+
+static FILE *out_file;
 
 typedef struct {
     char *p;
@@ -85,7 +95,12 @@ typedef struct {
 
 static void oom(void)
 {
-    fputs("{\"ok\":false,\"error\":\"out of memory\"}\n", stdout);
+    static const char msg[] = "{\"ok\":false,\"error\":\"out of memory\"}\n";
+    fputs(msg, stdout);
+    if (out_file) {
+        fputs(msg, out_file);
+        fclose(out_file);
+    }
     exit(EXIT_FAILED);
 }
 
@@ -264,6 +279,10 @@ static void j_print(J *j)
 {
     b_str(&j->b, "}\n");
     fwrite(j->b.p, 1, j->b.n, stdout);
+    if (out_file) {
+        fwrite(j->b.p, 1, j->b.n, out_file);
+        fflush(out_file);
+    }
     fflush(stdout);
     free(j->b.p);
     j->b.p = NULL;
@@ -524,10 +543,100 @@ static int enum_usb(int present_only, Dev **out)
     return n;
 }
 
+/*
+ * The speed the device runs at, from its port on the parent hub
+ * (IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX, and _V2 for SuperSpeed):
+ * "low", "full", "high", "super", or "" when unknown.
+ */
+static const char *usb_speed(HDEVINFO h, SP_DEVINFO_DATA *d)
+{
+    union {
+        USB_NODE_CONNECTION_INFORMATION_EX ci;
+        BYTE raw[sizeof(USB_NODE_CONNECTION_INFORMATION_EX) +
+                 32 * sizeof(USB_PIPE_INFO)];
+    } u;
+    USB_NODE_CONNECTION_INFORMATION_EX_V2 v2;
+    wchar_t hub_id[MAX_DEVICE_ID_LEN], *ifs;
+    DEVINST parent;
+    DWORD port = 0, type = 0, got = 0;
+    ULONG len = 0;
+    HANDLE hub;
+    const char *r = "";
+
+    if (!SetupDiGetDeviceRegistryPropertyW(h, d, SPDRP_ADDRESS, &type,
+                                           (PBYTE)&port, sizeof port, NULL) ||
+        type != REG_DWORD || port == 0) {
+        return "";
+    }
+    if (CM_Get_Parent(&parent, d->DevInst, 0) != CR_SUCCESS ||
+        CM_Get_Device_IDW(parent, hub_id, MAX_DEVICE_ID_LEN, 0) !=
+        CR_SUCCESS) {
+        return "";
+    }
+    if (CM_Get_Device_Interface_List_SizeW(&len, (LPGUID)&HUB_INTERFACE,
+                                           hub_id,
+                                           CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+        != CR_SUCCESS || len < 2) {
+        return "";
+    }
+    ifs = calloc(len + 1, sizeof(wchar_t));
+    if (!ifs) {
+        oom();
+    }
+    if (CM_Get_Device_Interface_ListW((LPGUID)&HUB_INTERFACE, hub_id, ifs,
+                                      len,
+                                      CM_GET_DEVICE_INTERFACE_LIST_PRESENT) !=
+        CR_SUCCESS || !ifs[0]) {
+        free(ifs);
+        return "";
+    }
+    hub = CreateFileW(ifs, GENERIC_WRITE, FILE_SHARE_WRITE, NULL,
+                      OPEN_EXISTING, 0, NULL);
+    free(ifs);
+    if (hub == INVALID_HANDLE_VALUE) {
+        return "";
+    }
+    memset(&u, 0, sizeof u);
+    u.ci.ConnectionIndex = port;
+    if (DeviceIoControl(hub, IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX,
+                        &u, sizeof u, &u, sizeof u, &got, NULL) &&
+        u.ci.ConnectionStatus == DeviceConnected) {
+        switch (u.ci.Speed) {
+        case UsbLowSpeed:
+            r = "low";
+            break;
+        case UsbFullSpeed:
+            r = "full";
+            break;
+        case UsbHighSpeed:
+            r = "high";
+            break;
+        case UsbSuperSpeed:
+            r = "super";
+            break;
+        }
+        /* _EX reports at most high speed */
+        memset(&v2, 0, sizeof v2);
+        v2.ConnectionIndex = port;
+        v2.Length = sizeof v2;
+        v2.SupportedUsbProtocols.ul = 0x4;        /* Usb300 */
+        if (u.ci.Speed == UsbHighSpeed &&
+            DeviceIoControl(hub,
+                            IOCTL_USB_GET_NODE_CONNECTION_INFORMATION_EX_V2,
+                            &v2, sizeof v2, &v2, sizeof v2, &got, NULL) &&
+            (v2.Flags.ul & 0x5)) {   /* operating at SuperSpeed or SS+ */
+            r = "super";
+        }
+    }
+    CloseHandle(hub);
+    return r;
+}
+
 typedef struct {
     wchar_t desc[256], product[256], drvdesc[256];
     wchar_t cls[64], clsguid[64], service[64], inf[MAX_PATH];
     int composite, present;
+    const char *speed;
     ULONG problem;
 } Info;
 
@@ -557,6 +666,7 @@ static int get_info(const wchar_t *inst, Info *in)
                     !_wcsicmp(in->service, L"usbccgp");
     free(compat);
     in->present = dn_present(d.DevInst, &in->problem);
+    in->speed = in->present ? usb_speed(h, &d) : "";
     SetupDiDestroyDeviceInfoList(h);
     return 1;
 }
@@ -570,6 +680,7 @@ static void j_info(J *j, const Info *in)
     j_w(j, "service", in->service);
     j_w(j, "inf", in->inf);
     j_w(j, "driver", in->drvdesc);
+    j_s(j, "speed", in->speed);
     j_b(j, "composite", in->composite);
     j_b(j, "winusb", is_winusb(in->service));
     j_i(j, "problem", (long long)in->problem);
@@ -1474,17 +1585,16 @@ static int cmd_unbind(unsigned vid, unsigned pid)
 
 static int usage(void)
 {
-    fputs("usage: winusb-switch list\n"
-          "       winusb-switch bind VVVV:PPPP\n"
-          "       winusb-switch unbind VVVV:PPPP\n", stderr);
+    fputs("usage: winusb-switch list [--out FILE]\n"
+          "       winusb-switch bind VVVV:PPPP [--out FILE]\n"
+          "       winusb-switch unbind VVVV:PPPP [--out FILE]\n", stderr);
     return EXIT_USAGE;
 }
 
-int wmain(int argc, wchar_t **argv)
+static int run(int argc, wchar_t **argv)
 {
     unsigned vid, pid;
 
-    _setmode(_fileno(stdout), _O_BINARY);
     if (argc == 2 && !wcscmp(argv[1], L"list")) {
         return cmd_list();
     }
@@ -1498,4 +1608,24 @@ int wmain(int argc, wchar_t **argv)
         return cmd_unbind(vid, pid);
     }
     return usage();
+}
+
+int wmain(int argc, wchar_t **argv)
+{
+    int r;
+
+    _setmode(_fileno(stdout), _O_BINARY);
+    if (argc >= 3 && !wcscmp(argv[argc - 2], L"--out")) {
+        out_file = _wfopen(argv[argc - 1], L"wb");
+        if (!out_file) {
+            fputs("winusb-switch: cannot write the --out file\n", stderr);
+            return EXIT_USAGE;
+        }
+        argc -= 2;
+    }
+    r = run(argc, argv);
+    if (out_file) {
+        fclose(out_file);
+    }
+    return r;
 }
