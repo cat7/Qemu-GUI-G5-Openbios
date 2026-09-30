@@ -11,10 +11,9 @@
  * restarted) to finish, 1 failed, 2 usage, 3 refused, 4 not elevated,
  * 5 in use (a program holds the device; nothing changed).
  *
- * Build (MSYS2 UCRT64, 64-bit only; 32-bit on 64-bit Windows cannot
- * install drivers):
- *   gcc -O2 -Wall -municode -o winusb-switch.exe winusb-switch.c \
- *       -lsetupapi -lcfgmgr32
+ * Build (64-bit only; 32-bit on 64-bit Windows cannot install drivers):
+ *   x86_64-w64-mingw32-gcc -O2 -Wall -municode -o winusb-switch.exe \
+ *       winusb-switch.c -lsetupapi -lcfgmgr32
  */
 
 #ifndef UNICODE
@@ -856,11 +855,12 @@ static const char *veto_text(int t)
 static int quiesce(DEVINST dn, J *j)
 {
     PNP_VETO_TYPE vt = PNP_VetoTypeUnknown;
-    wchar_t name[MAX_PATH];
+    wchar_t name[MAX_PATH + 2];
     CONFIGRET cr;
     char t[16];
 
-    name[0] = 0;
+    /* May come back unterminated or as a multi-sz; the first string only */
+    memset(name, 0, sizeof name);
     cr = CM_Query_And_Remove_SubTreeW(dn, &vt, name, MAX_PATH,
                                       CM_REMOVE_UI_NOT_OK);
     if (cr == CR_SUCCESS) {
@@ -868,7 +868,7 @@ static int quiesce(DEVINST dn, J *j)
     }
     j_b(j, "ok", 0);
     if (cr == CR_REMOVE_VETOED) {
-        name[MAX_PATH - 1] = 0;
+        name[MAX_PATH] = 0;
         j_s(j, "refuse", "in use");
         j_i(j, "veto_type", (long long)vt);
         j_s(j, "veto", veto_text((int)vt));
