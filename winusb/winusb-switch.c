@@ -5,6 +5,7 @@
  *   winusb-switch list [--out FILE]
  *   winusb-switch bind VVVV:PPPP [--out FILE]      (administrator)
  *   winusb-switch unbind VVVV:PPPP [--out FILE]    (administrator)
+ *   winusb-switch cleanup-cert [--out FILE]        (administrator)
  *
  * stdout: one JSON object per line; --out writes the same lines to FILE
  * (an elevated run's stdout cannot be read by the program that started it).
@@ -14,7 +15,7 @@
  *
  * Build (64-bit only; 32-bit on 64-bit Windows cannot install drivers):
  *   x86_64-w64-mingw32-gcc -O2 -Wall -municode -o winusb-switch.exe \
- *       winusb-switch.c -lsetupapi -lcfgmgr32
+ *       winusb-switch.c -lsetupapi -lcfgmgr32 -lcrypt32 -lwintrust
  */
 
 #ifndef UNICODE
@@ -31,6 +32,9 @@
 #include <cfgmgr32.h>
 #include <winioctl.h>
 #include <usbioctl.h>
+#include <wincrypt.h>
+#include <wintrust.h>
+#include <mscat.h>
 #include <fcntl.h>
 #include <io.h>
 #include <stdio.h>
@@ -73,6 +77,9 @@ static const DEVPROPKEY PK_DRIVERDESC = {
 static const DEVPROPKEY PK_INFPATH = {
     { 0xa8b865dd, 0x2e3d, 0x4094,
       { 0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6 } }, 5 };
+static const DEVPROPKEY PK_PROVIDER = {
+    { 0xa8b865dd, 0x2e3d, 0x4094,
+      { 0xad, 0x97, 0xe5, 0x93, 0xa7, 0x0c, 0x75, 0xd6 } }, 9 };
 static const DEVPROPKEY PK_BUSDESC = {
     { 0x540b947e, 0x8b40, 0x45bc,
       { 0xa8, 0xa2, 0x6a, 0x0b, 0x89, 0x4c, 0xbd, 0xa2 } }, 4 };
@@ -241,18 +248,15 @@ static char *j_take(J *j)
     return j->b.p;
 }
 
-/* key: {"code":"0x...","message":"..."} */
-static void j_err(J *j, const char *key, DWORD code)
+/* "code" and "message" of a Win32, SetupAPI or HRESULT error into e */
+static void j_code(J *e, DWORD code)
 {
     wchar_t *msg = NULL;
     DWORD fm = code;
     char t[16];
-    J e;
-    char *s;
 
-    j_open(&e);
     snprintf(t, sizeof t, "0x%08lx", (unsigned long)code);
-    j_s(&e, "code", t);
+    j_s(e, "code", t);
     /* SetupAPI errors (0xE000xxxx) have text under their HRESULT form */
     if ((code & 0xE0000000u) == 0xE0000000u) {
         fm = (code & 0xFFFFu) | (15u << 16) | 0x80000000u;
@@ -266,12 +270,105 @@ static void j_err(J *j, const char *key, DWORD code)
                      msg[n - 1] == L' ' || msg[n - 1] == L'.')) {
             msg[--n] = 0;
         }
-        j_w(&e, "message", msg);
+        j_w(e, "message", msg);
         LocalFree(msg);
     }
+}
+
+/* key: {"code":"0x...","message":"..."} */
+static void j_err(J *j, const char *key, DWORD code)
+{
+    J e;
+    char *s;
+
+    j_open(&e);
+    j_code(&e, code);
     s = j_take(&e);
     j_raw(j, key, s);
     free(s);
+}
+
+/* ---- steps: every call that changes something, for the result -------- */
+
+static Buf steps;
+static int nsteps;
+
+static void step_add(const char *call, int ok, const char *ret, DWORD err,
+                     const char *note)
+{
+    J e;
+    char *s;
+
+    j_open(&e);
+    j_s(&e, "call", call);
+    j_b(&e, "ok", ok);
+    if (ret) {
+        j_s(&e, "ret", ret);
+    }
+    if (!ok && err) {
+        j_code(&e, err);
+    }
+    if (note) {
+        j_s(&e, "note", note);
+    }
+    s = j_take(&e);
+    b_str(&steps, nsteps++ ? "," : "");
+    b_str(&steps, s);
+    free(s);
+}
+
+/* BOOL call: logged with GetLastError on failure, which is kept */
+static BOOL sb(const char *call, BOOL r)
+{
+    DWORD e = r ? 0 : GetLastError();
+    step_add(call, r != 0, r ? "TRUE" : "FALSE", e, NULL);
+    SetLastError(e);
+    return r;
+}
+
+static CONFIGRET scr(const char *call, CONFIGRET cr)
+{
+    char t[24];
+    snprintf(t, sizeof t, "CR 0x%02lx", (unsigned long)cr);
+    step_add(call, cr == CR_SUCCESS, t, 0, NULL);
+    return cr;
+}
+
+static HRESULT shr(const char *call, HRESULT hr)
+{
+    char t[16];
+    snprintf(t, sizeof t, "0x%08lx", (unsigned long)hr);
+    step_add(call, hr == S_OK, t, (DWORD)hr, NULL);
+    return hr;
+}
+
+static void snote(const char *call, const char *note)
+{
+    step_add(call, 1, NULL, 0, note);
+}
+
+/* 1 when the devnode exists, is started and has no problem */
+static int dn_started(DEVINST dn)
+{
+    ULONG st = 0, pr = 0;
+    return CM_Get_DevNode_Status(&st, &pr, dn, 0) == CR_SUCCESS &&
+           (st & DN_STARTED) && !(st & DN_HAS_PROBLEM);
+}
+
+/* The devnode's status into the steps */
+static void sstate(const char *label, DEVINST dn)
+{
+    ULONG st = 0, pr = 0;
+    char t[64];
+
+    if (CM_Get_DevNode_Status(&st, &pr, dn, 0) != CR_SUCCESS) {
+        snote(label, "no devnode");
+        return;
+    }
+    snprintf(t, sizeof t, "status 0x%08lx problem %lu%s", (unsigned long)st,
+             (unsigned long)((st & DN_HAS_PROBLEM) ? pr : 0),
+             (st & DN_STARTED) ? " started" : "");
+    snote(label, t);
 }
 
 /* Close, print one line, free. */
@@ -634,8 +731,8 @@ static const char *usb_speed(HDEVINFO h, SP_DEVINFO_DATA *d)
 
 typedef struct {
     wchar_t desc[256], product[256], drvdesc[256];
-    wchar_t cls[64], clsguid[64], service[64], inf[MAX_PATH];
-    int composite, present;
+    wchar_t cls[64], clsguid[64], service[64], inf[MAX_PATH], provider[64];
+    int composite, present, started;
     const char *speed;
     ULONG problem;
 } Info;
@@ -658,6 +755,7 @@ static int get_info(const wchar_t *inst, Info *in)
     dev_pkey_into(h, &d, &PK_BUSDESC, in->product, 256);
     dev_pkey_into(h, &d, &PK_DRIVERDESC, in->drvdesc, 256);
     dev_pkey_into(h, &d, &PK_INFPATH, in->inf, MAX_PATH);
+    dev_pkey_into(h, &d, &PK_PROVIDER, in->provider, 64);
     dev_prop_into(h, &d, SPDRP_CLASS, in->cls, 64);
     dev_prop_into(h, &d, SPDRP_CLASSGUID, in->clsguid, 64);
     dev_prop_into(h, &d, SPDRP_SERVICE, in->service, 64);
@@ -666,6 +764,7 @@ static int get_info(const wchar_t *inst, Info *in)
                     !_wcsicmp(in->service, L"usbccgp");
     free(compat);
     in->present = dn_present(d.DevInst, &in->problem);
+    in->started = dn_started(d.DevInst);
     in->speed = in->present ? usb_speed(h, &d) : "";
     SetupDiDestroyDeviceInfoList(h);
     return 1;
@@ -680,10 +779,12 @@ static void j_info(J *j, const Info *in)
     j_w(j, "service", in->service);
     j_w(j, "inf", in->inf);
     j_w(j, "driver", in->drvdesc);
+    j_w(j, "provider", in->provider);
     j_s(j, "speed", in->speed);
     j_b(j, "composite", in->composite);
     j_b(j, "winusb", is_winusb(in->service));
     j_i(j, "problem", (long long)in->problem);
+    j_b(j, "started", in->started);
 }
 
 /* ---- what may never be switched ---------------------------------------- */
@@ -870,6 +971,14 @@ static FARPROC newdev_fn(const char *name)
 
 static int finish(J *j, int code)
 {
+    if (nsteps) {
+        Buf b = { 0 };
+        b_str(&b, "[");
+        b_str(&b, steps.p);
+        b_str(&b, "]");
+        j_raw(j, "steps", b.p);
+        free(b.p);
+    }
     j_print(j);
     return code;
 }
@@ -939,11 +1048,13 @@ static void rescan(DEVINST parent)
     DEVINST root;
 
     if (parent) {
-        CM_Reenumerate_DevNode(parent, CM_REENUMERATE_SYNCHRONOUS);
+        scr("CM_Reenumerate_DevNode(parent)",
+            CM_Reenumerate_DevNode(parent, CM_REENUMERATE_SYNCHRONOUS));
     }
     if (CM_Locate_DevNodeW(&root, NULL, CM_LOCATE_DEVNODE_NORMAL) ==
         CR_SUCCESS) {
-        CM_Reenumerate_DevNode(root, CM_REENUMERATE_SYNCHRONOUS);
+        scr("CM_Reenumerate_DevNode(root)",
+            CM_Reenumerate_DevNode(root, CM_REENUMERATE_SYNCHRONOUS));
     }
 }
 
@@ -972,9 +1083,12 @@ static int quiesce(DEVINST dn, J *j)
 
     /* May come back unterminated or as a multi-sz; the first string only */
     memset(name, 0, sizeof name);
-    cr = CM_Query_And_Remove_SubTreeW(dn, &vt, name, MAX_PATH,
-                                      CM_REMOVE_UI_NOT_OK);
+    sstate("state before stop", dn);
+    cr = scr("CM_Query_And_Remove_SubTreeW",
+             CM_Query_And_Remove_SubTreeW(dn, &vt, name, MAX_PATH,
+                                          CM_REMOVE_UI_NOT_OK));
     if (cr == CR_SUCCESS) {
+        sstate("state after stop", dn);
         return 0;
     }
     j_b(j, "ok", 0);
@@ -994,16 +1108,21 @@ static int quiesce(DEVINST dn, J *j)
     return finish(j, EXIT_FAILED);
 }
 
-/* Start a quiesced device again; 1 once it is present. */
+/*
+ * Start a quiesced device again; 1 once it runs without a problem. A
+ * storage device stopped this way is held for eject (problem 47) and does
+ * not start until it is removed and enumerated afresh.
+ */
 static int restart(DEVINST dn)
 {
     DEVINST parent = 0;
     int t;
 
     CM_Get_Parent(&parent, dn, 0);
-    CM_Setup_DevNode(dn, CM_SETUP_DEVNODE_READY);
+    scr("CM_Setup_DevNode(READY)", CM_Setup_DevNode(dn, CM_SETUP_DEVNODE_READY));
     for (t = 0; t < 40; t++) {
-        if (dn_present(dn, NULL)) {
+        if (dn_started(dn)) {
+            sstate("state after restart", dn);
             return 1;
         }
         if (t == 20) {
@@ -1011,6 +1130,7 @@ static int restart(DEVINST dn)
         }
         Sleep(250);
     }
+    sstate("state after restart", dn);
     return 0;
 }
 
@@ -1083,7 +1203,8 @@ static void restore_class(HDEVINFO h, SP_DEVINFO_DATA *d, J *j)
  * Remove the devnode so Windows matches a driver afresh; rescan unless the
  * removal is deferred (*reboot set).
  */
-static int remove_dev(const wchar_t *inst, J *j, BOOL *reboot, DWORD *err)
+static int remove_dev(const wchar_t *inst, const wchar_t *oem_inf, J *j,
+                      BOOL *reboot, DWORD *err)
 {
     DiUninstallDevice_fn uninstall =
         (DiUninstallDevice_fn)(void (*)(void))newdev_fn("DiUninstallDevice");
@@ -1106,12 +1227,25 @@ static int remove_dev(const wchar_t *inst, J *j, BOOL *reboot, DWORD *err)
         parent = 0;
     }
     restore_class(h, &d, j);
-    if (!uninstall(NULL, h, &d, 0, &rb)) {
+    if (!sb("DiUninstallDevice", uninstall(NULL, h, &d, 0, &rb))) {
         *err = GetLastError();
         SetupDiDestroyDeviceInfoList(h);
         return 0;
     }
     SetupDiDestroyDeviceInfoList(h);
+    if (rb) {
+        snote("DiUninstallDevice", "removal deferred");
+    }
+    /* Before the rescan, or Windows picks the package again */
+    if (oem_inf && oem_inf[0]) {
+        char *s = utf8(oem_inf);
+        sb("SetupUninstallOEMInfW",
+           SetupUninstallOEMInfW(oem_inf, SUOI_FORCEDELETE, NULL));
+        if (j) {
+            j_s(j, "oem_inf_removed", s);
+        }
+        free(s);
+    }
     if (rb) {
         *reboot = TRUE;
         return 1;
@@ -1120,8 +1254,11 @@ static int remove_dev(const wchar_t *inst, J *j, BOOL *reboot, DWORD *err)
     return 1;
 }
 
+#define WANT_WINDOWS 0      /* running on a driver other than WinUSB */
+#define WANT_WINUSB  1      /* running on WinUSB */
+#define WANT_ANY     2      /* running */
 static int wait_back(const wchar_t *inst, unsigned vid, unsigned pid,
-                     Info *in, wchar_t *now, int seconds);
+                     Info *in, wchar_t *now, int seconds, int want);
 
 /* Undo a half-done bind: remove the devnode, report what Windows put back. */
 static void restore(J *j, const Dev *dev, BOOL *reboot)
@@ -1130,7 +1267,7 @@ static void restore(J *j, const Dev *dev, BOOL *reboot)
     Info in;
     wchar_t now[MAX_DEVICE_ID_LEN];
 
-    if (!remove_dev(dev->inst, j, reboot, &err)) {
+    if (!remove_dev(dev->inst, NULL, j, reboot, &err)) {
         j_b(j, "restored", 0);
         j_err(j, "restore_detail", err);
         return;
@@ -1139,7 +1276,8 @@ static void restore(J *j, const Dev *dev, BOOL *reboot)
         j_b(j, "restored", 0);
         return;
     }
-    j_b(j, "restored", wait_back(dev->inst, dev->vid, dev->pid, &in, now, 30));
+    j_b(j, "restored", wait_back(dev->inst, dev->vid, dev->pid, &in, now, 30,
+                                 WANT_WINDOWS));
     j_w(j, "service_after", in.service);
 }
 
@@ -1155,6 +1293,735 @@ static int done(J *j, BOOL reboot)
     }
     j_s(j, "status", "done");
     return finish(j, EXIT_DONE);
+}
+
+/* ---- own INF: a signed package naming this device ---------------------
+ *
+ * For a device the inbox winusb.inf node does not take (USB storage), a
+ * package whose INF names USB\VID_v&PID_p, class USBDevice, and installs
+ * Windows' own WinUSB through Include/Needs. Its catalog is signed with a
+ * self-signed code-signing certificate made for this device; the private
+ * key is deleted right after signing, and the certificate is put in the
+ * machine's Root and TrustedPublisher stores. unbind removes package and
+ * certificate.
+ */
+
+#define PROVIDER      L"winusb-switch"
+#define INSTALLFLAG_FORCE_ 0x00000001
+
+typedef BOOL (WINAPI *UpdateDriver_fn)(HWND, LPCWSTR, LPCWSTR, DWORD, PBOOL);
+
+/* mssign32.dll (no header in mingw-w64) */
+typedef struct {
+    DWORD cbSize;
+    LPCWSTR pwszFileName;
+    HANDLE hFile;
+} SIGNER_FILE_INFO_;
+typedef struct {
+    DWORD cbSize;
+    DWORD *pdwIndex;
+    DWORD dwSubjectChoice;
+    union {
+        SIGNER_FILE_INFO_ *pSignerFileInfo;
+        void *pSignerBlobInfo;
+    } u;
+} SIGNER_SUBJECT_INFO_;
+typedef struct {
+    DWORD cbSize;
+    PCCERT_CONTEXT pSigningCert;
+    DWORD dwCertPolicy;
+    HCERTSTORE hCertStore;
+} SIGNER_CERT_STORE_INFO_;
+typedef struct {
+    DWORD cbSize;
+    DWORD dwCertChoice;
+    union {
+        LPCWSTR pwszSpcFile;
+        SIGNER_CERT_STORE_INFO_ *pCertStoreInfo;
+        void *pSpcChainInfo;
+    } u;
+    HWND hwnd;
+} SIGNER_CERT_;
+typedef struct {
+    DWORD cbSize;
+    ALG_ID algidHash;
+    DWORD dwAttrChoice;
+    union {
+        void *pAttrAuthcode;
+    } u;
+    PCRYPT_ATTRIBUTES psAuthenticated;
+    PCRYPT_ATTRIBUTES psUnauthenticated;
+} SIGNER_SIGNATURE_INFO_;
+typedef struct {
+    DWORD cbSize;
+    DWORD cbBlob;
+    BYTE *pbBlob;
+} SIGNER_CONTEXT_;
+#define SIGNER_SUBJECT_FILE_      1
+#define SIGNER_CERT_STORE_        2
+#define SIGNER_CERT_POLICY_CHAIN_ 2
+#define SIGNER_NO_ATTR_           0
+typedef HRESULT (WINAPI *SignerSignEx_fn)(DWORD, SIGNER_SUBJECT_INFO_ *,
+                                          SIGNER_CERT_ *,
+                                          SIGNER_SIGNATURE_INFO_ *, void *,
+                                          LPCWSTR, PCRYPT_ATTRIBUTES, void *,
+                                          SIGNER_CONTEXT_ **);
+typedef HRESULT (WINAPI *SignerFreeSignerContext_fn)(SIGNER_CONTEXT_ *);
+
+/* Catalog member subject type of an INF (flat file) */
+static const GUID INF_SUBJECT = {
+    0xde351a42, 0x8e59, 0x11d0,
+    { 0x8c, 0x47, 0x00, 0xc0, 0x4f, 0xc2, 0x95, 0xee } };
+
+/* "winusb-switch vvvv:pppp": certificate subject and key container */
+static void cert_name(wchar_t *out, size_t cch, unsigned vid, unsigned pid)
+{
+    swprintf(out, cch, PROVIDER L" %04x:%04x", vid, pid);
+}
+
+static void hex(char *out, const BYTE *p, DWORD n)
+{
+    DWORD i;
+    for (i = 0; i < n; i++) {
+        snprintf(out + 2 * i, 3, "%02X", p[i]);
+    }
+    out[2 * n] = 0;
+}
+
+static void thumbprint(PCCERT_CONTEXT c, char *out)
+{
+    BYTE h[20];
+    DWORD n = sizeof h;
+
+    out[0] = 0;
+    if (CertGetCertificateContextProperty(c, CERT_SHA1_HASH_PROP_ID, h, &n)) {
+        hex(out, h, n);
+    }
+}
+
+/*
+ * Remove every certificate whose subject holds *match* from the machine's
+ * Root and TrustedPublisher stores; their thumbprints into j under key.
+ */
+static int cert_remove(const wchar_t *match, J *j, const char *key)
+{
+    static const wchar_t *stores[] = { L"Root", L"TrustedPublisher" };
+    Buf list = { 0 };
+    int n = 0, i;
+
+    b_str(&list, "[");
+    for (i = 0; i < 2; i++) {
+        HCERTSTORE st = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                      CERT_SYSTEM_STORE_LOCAL_MACHINE,
+                                      stores[i]);
+        PCCERT_CONTEXT c;
+
+        if (!st) {
+            sb("CertOpenStore", FALSE);
+            continue;
+        }
+        while ((c = CertFindCertificateInStore(st, X509_ASN_ENCODING, 0,
+                                               CERT_FIND_SUBJECT_STR_W,
+                                               match, NULL)) != NULL) {
+            char t[48];
+            thumbprint(c, t);
+            /* frees c */
+            if (!sb("CertDeleteCertificateFromStore",
+                    CertDeleteCertificateFromStore(c))) {
+                break;
+            }
+            if (i == 0) {
+                b_str(&list, n++ ? "," : "");
+                b_jstr(&list, t);
+            }
+        }
+        CertCloseStore(st, 0);
+    }
+    b_str(&list, "]");
+    if (j) {
+        j_raw(j, key, list.p);
+    }
+    free(list.p);
+    return n;
+}
+
+static void drop_key(const wchar_t *name)
+{
+    HCRYPTPROV p = 0;
+    sb("CryptAcquireContextW(DELETEKEYSET)",
+       CryptAcquireContextW(&p, name, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
+                            CRYPT_MACHINE_KEYSET | CRYPT_DELETEKEYSET |
+                            CRYPT_SILENT));
+}
+
+/* Self-signed, code signing only, key in a machine key container *name* */
+static PCCERT_CONTEXT make_cert(const wchar_t *name)
+{
+    HCRYPTPROV prov = 0;
+    HCRYPTKEY key = 0;
+    CERT_NAME_BLOB subj = { 0, NULL };
+    CRYPT_KEY_PROV_INFO kpi;
+    CRYPT_ALGORITHM_IDENTIFIER alg;
+    SYSTEMTIME end = { 2049, 12, 0, 31, 0, 0, 0, 0 };
+    LPSTR eku_oid = szOID_PKIX_KP_CODE_SIGNING;
+    CERT_ENHKEY_USAGE eku = { 1, &eku_oid };
+    CERT_EXTENSION ext;
+    CERT_EXTENSIONS exts;
+    BYTE *ekub = NULL;
+    DWORD n = 0;
+    wchar_t x500[96];
+    PCCERT_CONTEXT c = NULL;
+
+    /* A container left by an earlier, interrupted bind */
+    CryptAcquireContextW(&prov, name, MS_ENH_RSA_AES_PROV_W, PROV_RSA_AES,
+                         CRYPT_MACHINE_KEYSET | CRYPT_DELETEKEYSET |
+                         CRYPT_SILENT);
+    prov = 0;
+    if (!sb("CryptAcquireContextW(NEWKEYSET)",
+            CryptAcquireContextW(&prov, name, MS_ENH_RSA_AES_PROV_W,
+                                 PROV_RSA_AES,
+                                 CRYPT_NEWKEYSET | CRYPT_MACHINE_KEYSET |
+                                 CRYPT_SILENT))) {
+        prov = 0;
+        goto out;
+    }
+    if (!sb("CryptGenKey", CryptGenKey(prov, AT_SIGNATURE, 2048u << 16,
+                                       &key))) {
+        goto out;
+    }
+    swprintf(x500, 96, L"CN=\"%ls\"", name);
+    if (!sb("CertStrToNameW", CertStrToNameW(X509_ASN_ENCODING, x500,
+                                             CERT_X500_NAME_STR, NULL, NULL,
+                                             &subj.cbData, NULL))) {
+        goto out;
+    }
+    subj.pbData = malloc(subj.cbData);
+    if (!subj.pbData) {
+        oom();
+    }
+    if (!CertStrToNameW(X509_ASN_ENCODING, x500, CERT_X500_NAME_STR, NULL,
+                        subj.pbData, &subj.cbData, NULL)) {
+        goto out;
+    }
+    if (!sb("CryptEncodeObject(EKU)",
+            CryptEncodeObject(X509_ASN_ENCODING, X509_ENHANCED_KEY_USAGE,
+                              &eku, NULL, &n))) {
+        goto out;
+    }
+    ekub = malloc(n);
+    if (!ekub) {
+        oom();
+    }
+    if (!CryptEncodeObject(X509_ASN_ENCODING, X509_ENHANCED_KEY_USAGE, &eku,
+                           ekub, &n)) {
+        goto out;
+    }
+    ext.pszObjId = szOID_ENHANCED_KEY_USAGE;
+    ext.fCritical = FALSE;
+    ext.Value.cbData = n;
+    ext.Value.pbData = ekub;
+    exts.cExtension = 1;
+    exts.rgExtension = &ext;
+    memset(&kpi, 0, sizeof kpi);
+    kpi.pwszContainerName = (LPWSTR)name;
+    kpi.pwszProvName = (LPWSTR)MS_ENH_RSA_AES_PROV_W;
+    kpi.dwProvType = PROV_RSA_AES;
+    kpi.dwFlags = CRYPT_MACHINE_KEYSET;
+    kpi.dwKeySpec = AT_SIGNATURE;
+    memset(&alg, 0, sizeof alg);
+    alg.pszObjId = szOID_RSA_SHA256RSA;
+    c = CertCreateSelfSignCertificate(0, &subj, 0, &kpi, &alg, NULL, &end,
+                                      &exts);
+    sb("CertCreateSelfSignCertificate", c != NULL);
+
+out:
+    free(ekub);
+    free(subj.pbData);
+    if (key) {
+        CryptDestroyKey(key);
+    }
+    if (prov) {
+        CryptReleaseContext(prov, 0);
+    }
+    return c;
+}
+
+/* Add the certificate (without its key) to Root and TrustedPublisher */
+static int trust_cert(PCCERT_CONTEXT c, const wchar_t *name)
+{
+    static const wchar_t *stores[] = { L"Root", L"TrustedPublisher" };
+    CRYPT_DATA_BLOB friendly;
+    int i, ok = 1;
+
+    friendly.cbData = (DWORD)((wcslen(name) + 1) * sizeof(wchar_t));
+    friendly.pbData = (BYTE *)name;
+    for (i = 0; i < 2; i++) {
+        HCERTSTORE st = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                      CERT_SYSTEM_STORE_LOCAL_MACHINE,
+                                      stores[i]);
+        PCCERT_CONTEXT added = NULL;
+
+        if (!sb("CertOpenStore", st != NULL)) {
+            ok = 0;
+            continue;
+        }
+        if (sb("CertAddEncodedCertificateToStore",
+               CertAddEncodedCertificateToStore(st, X509_ASN_ENCODING,
+                                                c->pbCertEncoded,
+                                                c->cbCertEncoded,
+                                                CERT_STORE_ADD_REPLACE_EXISTING,
+                                                &added))) {
+            CertSetCertificateContextProperty(added, CERT_FRIENDLY_NAME_PROP_ID,
+                                              0, &friendly);
+            CertFreeCertificateContext(added);
+        } else {
+            ok = 0;
+        }
+        CertCloseStore(st, 0);
+    }
+    return ok;
+}
+
+static CRYPTCATATTRIBUTE *cat_attr(HANDLE cat, CRYPTCATMEMBER *m,
+                                   const wchar_t *name, const wchar_t *value)
+{
+    DWORD flags = CRYPTCAT_ATTR_AUTHENTICATED | CRYPTCAT_ATTR_NAMEASCII |
+                  CRYPTCAT_ATTR_DATAASCII;
+    DWORD size = (DWORD)((wcslen(value) + 1) * sizeof(wchar_t));
+
+    if (m) {
+        return CryptCATPutAttrInfo(cat, m, (WCHAR *)name, flags, size,
+                                   (BYTE *)value);
+    }
+    return CryptCATPutCatAttrInfo(cat, (WCHAR *)name, flags, size,
+                                  (BYTE *)value);
+}
+
+/* A catalog holding the INF's hash, as MakeCat would write it */
+static int make_cat(const wchar_t *cat_path, const wchar_t *inf_path,
+                    const wchar_t *inf_name, const wchar_t *hwid)
+{
+    HCRYPTPROV prov = 0;
+    HANDLE cat = INVALID_HANDLE_VALUE, f;
+    BYTE hash[64], enc[128];
+    DWORD cb = sizeof hash, cbenc = sizeof enc;
+    wchar_t tag[2 * 64 + 1], lower_hwid[64], lower_name[MAX_PATH];
+    char tag8[2 * 64 + 1];
+    SPC_LINK link;
+    SIP_INDIRECT_DATA sip;
+    CRYPTCATMEMBER *m;
+    int ok = 0;
+    size_t i;
+
+    wcsncpy(lower_hwid, hwid, 63);
+    lower_hwid[63] = 0;
+    _wcslwr(lower_hwid);
+    wcsncpy(lower_name, inf_name, MAX_PATH - 1);
+    lower_name[MAX_PATH - 1] = 0;
+    _wcslwr(lower_name);
+
+    f = CreateFileW(inf_path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (!sb("CreateFileW(inf)", f != INVALID_HANDLE_VALUE)) {
+        return 0;
+    }
+    ok = sb("CryptCATAdminCalcHashFromFileHandle",
+            CryptCATAdminCalcHashFromFileHandle(f, &cb, hash, 0));
+    CloseHandle(f);
+    if (!ok) {
+        return 0;
+    }
+    ok = 0;
+    hex(tag8, hash, cb);
+    for (i = 0; tag8[i]; i++) {
+        tag[i] = (wchar_t)tag8[i];
+    }
+    tag[i] = 0;
+
+    if (!sb("CryptAcquireContextW(VERIFYCONTEXT)",
+            CryptAcquireContextW(&prov, NULL, NULL, PROV_RSA_FULL,
+                                 CRYPT_VERIFYCONTEXT))) {
+        return 0;
+    }
+    cat = CryptCATOpen((LPWSTR)cat_path, CRYPTCAT_OPEN_CREATENEW, prov, 0, 0);
+    if (!sb("CryptCATOpen", cat != INVALID_HANDLE_VALUE)) {
+        goto out;
+    }
+    if (!sb("CryptCATPutCatAttrInfo",
+            cat_attr(cat, NULL, L"HWID1", lower_hwid) != NULL &&
+            cat_attr(cat, NULL, L"OS", L"10_X64,10_ARM64") != NULL)) {
+        goto out;
+    }
+    link.dwLinkChoice = SPC_FILE_LINK_CHOICE;
+    link.pwszFile = (LPWSTR)L"<<<Obsolete>>>";
+    if (!sb("CryptEncodeObject(SPC_LINK)",
+            CryptEncodeObject(X509_ASN_ENCODING, SPC_CAB_DATA_OBJID, &link,
+                              enc, &cbenc))) {
+        goto out;
+    }
+    memset(&sip, 0, sizeof sip);
+    sip.Data.pszObjId = (LPSTR)SPC_CAB_DATA_OBJID;
+    sip.Data.Value.cbData = cbenc;
+    sip.Data.Value.pbData = enc;
+    sip.DigestAlgorithm.pszObjId = (LPSTR)szOID_OIWSEC_sha1;
+    sip.Digest.cbData = cb;
+    sip.Digest.pbData = hash;
+    m = CryptCATPutMemberInfo(cat, NULL, tag, (GUID *)&INF_SUBJECT, 0x200,
+                              sizeof sip, (BYTE *)&sip);
+    if (!sb("CryptCATPutMemberInfo", m != NULL)) {
+        goto out;
+    }
+    if (!sb("CryptCATPutAttrInfo",
+            cat_attr(cat, m, L"File", lower_name) != NULL &&
+            cat_attr(cat, m, L"OSAttr", L"2:6.1,2:6.2,2:6.3,2:10.0") !=
+            NULL)) {
+        goto out;
+    }
+    ok = sb("CryptCATPersistStore", CryptCATPersistStore(cat));
+
+out:
+    if (cat != INVALID_HANDLE_VALUE) {
+        CryptCATClose(cat);
+    }
+    CryptReleaseContext(prov, 0);
+    return ok;
+}
+
+/* Authenticode-sign the catalog with c (SHA-256) */
+static int sign_cat(const wchar_t *cat_path, PCCERT_CONTEXT c)
+{
+    /* Authenticode attributes: SpcSpOpusInfo {}, statement type individual */
+    static BYTE opus[] = { 0x30, 0x00 };
+    static BYTE stmt[] = { 0x30, 0x0c, 0x06, 0x0a, 0x2b, 0x06, 0x01, 0x04,
+                           0x01, 0x82, 0x37, 0x02, 0x01, 0x15 };
+    HMODULE m = LoadLibraryExW(L"mssign32.dll", NULL,
+                               LOAD_LIBRARY_SEARCH_SYSTEM32);
+    SignerSignEx_fn sign;
+    SignerFreeSignerContext_fn free_ctx;
+    SIGNER_FILE_INFO_ fi;
+    SIGNER_SUBJECT_INFO_ si;
+    SIGNER_CERT_STORE_INFO_ csi;
+    SIGNER_CERT_ sc;
+    SIGNER_SIGNATURE_INFO_ sig;
+    SIGNER_CONTEXT_ *ctx = NULL;
+    CRYPT_ATTR_BLOB opus_blob = { sizeof opus, opus };
+    CRYPT_ATTR_BLOB stmt_blob = { sizeof stmt, stmt };
+    CRYPT_ATTRIBUTE attrs[2];
+    CRYPT_ATTRIBUTES attr_array;
+    DWORD index = 0;
+    HRESULT hr;
+
+    if (!sb("LoadLibraryExW(mssign32)", m != NULL)) {
+        return 0;
+    }
+    sign = (SignerSignEx_fn)(void (*)(void))GetProcAddress(m, "SignerSignEx");
+    free_ctx = (SignerFreeSignerContext_fn)(void (*)(void))
+               GetProcAddress(m, "SignerFreeSignerContext");
+    if (!sb("GetProcAddress(SignerSignEx)", sign != NULL)) {
+        FreeLibrary(m);
+        return 0;
+    }
+    memset(&fi, 0, sizeof fi);
+    fi.cbSize = sizeof fi;
+    fi.pwszFileName = cat_path;
+    memset(&si, 0, sizeof si);
+    si.cbSize = sizeof si;
+    si.pdwIndex = &index;
+    si.dwSubjectChoice = SIGNER_SUBJECT_FILE_;
+    si.u.pSignerFileInfo = &fi;
+    memset(&csi, 0, sizeof csi);
+    csi.cbSize = sizeof csi;
+    csi.pSigningCert = c;
+    csi.dwCertPolicy = SIGNER_CERT_POLICY_CHAIN_;
+    memset(&sc, 0, sizeof sc);
+    sc.cbSize = sizeof sc;
+    sc.dwCertChoice = SIGNER_CERT_STORE_;
+    sc.u.pCertStoreInfo = &csi;
+    attrs[0].pszObjId = (LPSTR)SPC_SP_OPUS_INFO_OBJID;
+    attrs[0].cValue = 1;
+    attrs[0].rgValue = &opus_blob;
+    attrs[1].pszObjId = (LPSTR)SPC_STATEMENT_TYPE_OBJID;
+    attrs[1].cValue = 1;
+    attrs[1].rgValue = &stmt_blob;
+    attr_array.cAttr = 2;
+    attr_array.rgAttr = attrs;
+    memset(&sig, 0, sizeof sig);
+    sig.cbSize = sizeof sig;
+    sig.algidHash = CALG_SHA_256;
+    sig.dwAttrChoice = SIGNER_NO_ATTR_;
+    sig.psAuthenticated = &attr_array;
+    hr = shr("SignerSignEx", sign(0, &si, &sc, &sig, NULL, NULL, NULL, NULL,
+                                  &ctx));
+    if (ctx && free_ctx) {
+        free_ctx(ctx);
+    }
+    FreeLibrary(m);
+    return hr == S_OK;
+}
+
+/* A fresh random GUID as {XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX} */
+static int new_guid(char *out, size_t n)
+{
+    HCRYPTPROV p = 0;
+    BYTE b[16];
+
+    if (!CryptAcquireContextW(&p, NULL, NULL, PROV_RSA_FULL,
+                              CRYPT_VERIFYCONTEXT)) {
+        return 0;
+    }
+    if (!CryptGenRandom(p, sizeof b, b)) {
+        CryptReleaseContext(p, 0);
+        return 0;
+    }
+    CryptReleaseContext(p, 0);
+    b[6] = (BYTE)((b[6] & 0x0f) | 0x40);
+    b[8] = (BYTE)((b[8] & 0x3f) | 0x80);
+    snprintf(out, n, "{%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
+             "%02X%02X%02X%02X%02X%02X}",
+             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9],
+             b[10], b[11], b[12], b[13], b[14], b[15]);
+    return 1;
+}
+
+static int write_inf(const wchar_t *path, const char *cat_name,
+                     unsigned vid, unsigned pid, J *j)
+{
+    char guid[48], text[2048];
+    SYSTEMTIME now;
+    HANDLE f;
+    DWORD wrote = 0;
+    int n;
+
+    if (!sb("CryptGenRandom(interface GUID)", new_guid(guid, sizeof guid))) {
+        return 0;
+    }
+    j_s(j, "interface_guid", guid);
+    GetLocalTime(&now);
+    n = snprintf(text, sizeof text,
+        "; winusb-switch: Windows' WinUSB for USB\\VID_%04X&PID_%04X\r\n"
+        "[Version]\r\n"
+        "Signature   = \"$Windows NT$\"\r\n"
+        "Class       = USBDevice\r\n"
+        "ClassGuid   = {88BAE032-5A81-49F0-BC3D-A4FF138216D6}\r\n"
+        "Provider    = %%Provider%%\r\n"
+        "CatalogFile = %s\r\n"
+        "DriverVer   = %02u/%02u/%04u,1.0.0.0\r\n"
+        "PnpLockdown = 1\r\n"
+        "\r\n"
+        "[Manufacturer]\r\n"
+        "%%Provider%% = Devices,NTamd64,NTarm64\r\n"
+        "\r\n"
+        "[Devices.NTamd64]\r\n"
+        "%%DeviceName%% = USB_Install,USB\\VID_%04X&PID_%04X\r\n"
+        "\r\n"
+        "[Devices.NTarm64]\r\n"
+        "%%DeviceName%% = USB_Install,USB\\VID_%04X&PID_%04X\r\n"
+        "\r\n"
+        "[USB_Install]\r\n"
+        "Include = winusb.inf\r\n"
+        "Needs   = WINUSB.NT\r\n"
+        "\r\n"
+        "[USB_Install.Services]\r\n"
+        "Include = winusb.inf\r\n"
+        "Needs   = WINUSB.NT.Services\r\n"
+        "\r\n"
+        "[USB_Install.HW]\r\n"
+        "AddReg = Dev_AddReg\r\n"
+        "\r\n"
+        "[Dev_AddReg]\r\n"
+        "HKR,,DeviceInterfaceGUIDs,0x10000,\"%s\"\r\n"
+        "\r\n"
+        "[Strings]\r\n"
+        "Provider   = \"winusb-switch\"\r\n"
+        "DeviceName = \"USB device %04x:%04x for QEMU (WinUSB)\"\r\n",
+        vid, pid, cat_name, now.wMonth, now.wDay, now.wYear,
+        vid, pid, vid, pid, guid, vid, pid);
+    if (n <= 0 || n >= (int)sizeof text) {
+        return 0;
+    }
+    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    if (!sb("CreateFileW(write inf)", f != INVALID_HANDLE_VALUE)) {
+        return 0;
+    }
+    n = sb("WriteFile(inf)", WriteFile(f, text, (DWORD)n, &wrote, NULL) &&
+                             wrote == (DWORD)n);
+    CloseHandle(f);
+    return n;
+}
+
+/* The published name (oemNN.inf) of a package already in the store */
+static int oem_name(const wchar_t *inf_path, wchar_t *out, DWORD cch)
+{
+    PWSTR comp = NULL;
+
+    out[0] = 0;
+    if (SetupCopyOEMInfW(inf_path, NULL, SPOST_PATH, SP_COPY_NOOVERWRITE, out,
+                         cch, NULL, &comp) ||
+        GetLastError() == ERROR_FILE_EXISTS) {
+        if (comp && comp != out) {
+            memmove(out, comp, (wcslen(comp) + 1) * sizeof(wchar_t));
+        }
+        return out[0] != 0;
+    }
+    out[0] = 0;
+    return 0;
+}
+
+/*
+ * Install the own package on the device and see it running on WinUSB.
+ * 1 done (after filled); 0 failed, with package and certificate removed.
+ */
+static int inf_bind(const Dev *dev, const Info *before, J *j, BOOL *reboot,
+                    Info *after)
+{
+    UpdateDriver_fn update = (UpdateDriver_fn)(void (*)(void))
+                             newdev_fn("UpdateDriverForPlugAndPlayDevicesW");
+    wchar_t dir[MAX_PATH], inf[MAX_PATH], cat[MAX_PATH], name[64], hwid[64];
+    wchar_t inf_name[40], cat_name_w[40], oem[MAX_PATH], now[MAX_DEVICE_ID_LEN];
+    char cat_name[40], tp[48];
+    PCCERT_CONTEXT cert = NULL;
+    SP_DEVINFO_DATA d;
+    HDEVINFO h;
+    BOOL rb = FALSE;
+    DWORD err = 0;
+    int ok = 0, signed_ok, installed;
+
+    oem[0] = 0;
+    cert_name(name, 64, dev->vid, dev->pid);
+    swprintf(hwid, 64, L"USB\\VID_%04X&PID_%04X", dev->vid, dev->pid);
+    swprintf(inf_name, 40, L"qemu_winusb_%04x_%04x.inf", dev->vid, dev->pid);
+    swprintf(cat_name_w, 40, L"qemu_winusb_%04x_%04x.cat", dev->vid, dev->pid);
+    snprintf(cat_name, sizeof cat_name, "qemu_winusb_%04x_%04x.cat",
+             dev->vid, dev->pid);
+    j_s(j, "method", "inf");
+
+    if (!update) {
+        sb("GetProcAddress(UpdateDriverForPlugAndPlayDevicesW)", FALSE);
+        return 0;
+    }
+    /* The class to return to at unbind */
+    h = open_dev(dev->inst, &d);
+    if (h != INVALID_HANDLE_VALUE) {
+        wchar_t saved[64];
+        if (!load_class(h, &d, saved, 64) && before->clsguid[0] &&
+            _wcsicmp(before->clsguid, CLS_USBDEVICE) != 0) {
+            save_class(h, &d, before->clsguid);
+        }
+        SetupDiDestroyDeviceInfoList(h);
+    }
+
+    if (!GetTempPathW(MAX_PATH - 64, dir)) {
+        sb("GetTempPathW", FALSE);
+        return 0;
+    }
+    swprintf(dir + wcslen(dir), 64, L"winusb-switch-%04x-%04x", dev->vid,
+             dev->pid);
+    CreateDirectoryW(dir, NULL);
+    swprintf(inf, MAX_PATH, L"%ls\\%ls", dir, inf_name);
+    swprintf(cat, MAX_PATH, L"%ls\\%ls", dir, cat_name_w);
+    DeleteFileW(cat);
+
+    if (!write_inf(inf, cat_name, dev->vid, dev->pid, j) ||
+        !make_cat(cat, inf, inf_name, hwid)) {
+        goto out;
+    }
+    cert = make_cert(name);
+    if (!cert) {
+        drop_key(name);
+        goto out;
+    }
+    if (!trust_cert(cert, name)) {
+        drop_key(name);
+        goto out;
+    }
+    signed_ok = sign_cat(cat, cert);
+    drop_key(name);                         /* never keep a trusted key */
+    if (!signed_ok) {
+        goto out;
+    }
+    thumbprint(cert, tp);
+    j_s(j, "cert_thumbprint", tp);
+
+    installed = sb("UpdateDriverForPlugAndPlayDevicesW",
+                   update(NULL, hwid, inf, INSTALLFLAG_FORCE_, &rb));
+    if (!installed) {
+        err = GetLastError();
+        /* Held for eject, or not matched: stage it for the next start */
+        installed = sb("SetupCopyOEMInfW",
+                       SetupCopyOEMInfW(inf, NULL, SPOST_PATH, 0, NULL, 0,
+                                        NULL, NULL));
+    }
+    if (installed && oem_name(inf, oem, MAX_PATH)) {
+        char *s = utf8(oem);
+        j_s(j, "oem_inf", s);
+        free(s);
+    }
+    if (!installed) {
+        j_err(j, "install_detail", err);
+        goto out;
+    }
+    if (rb) {
+        snote("UpdateDriverForPlugAndPlayDevicesW", "restart requested");
+    }
+
+    /* Running on the new package, or restart it by a fresh enumeration */
+    get_info(dev->inst, after);
+    if (!(after->started && is_winusb(after->service) &&
+          !_wcsicmp(after->provider, PROVIDER))) {
+        sstate("state after install", dev->dn);
+        if (!remove_dev(dev->inst, NULL, NULL, reboot, &err)) {
+            goto out;
+        }
+        if (*reboot) {
+            ok = 1;                 /* WinUSB takes it on replug */
+            goto out;
+        }
+        if (!wait_back(dev->inst, dev->vid, dev->pid, after, now, 30,
+                       WANT_WINUSB)) {
+            goto out;
+        }
+    }
+    ok = is_winusb(after->service) && !_wcsicmp(after->provider, PROVIDER);
+
+out:
+    if (!ok) {
+        if (oem[0]) {
+            sb("SetupUninstallOEMInfW",
+               SetupUninstallOEMInfW(oem, SUOI_FORCEDELETE, NULL));
+        }
+        cert_remove(name, j, "certs_removed");
+    }
+    if (cert) {
+        CertFreeCertificateContext(cert);
+    }
+    DeleteFileW(inf);
+    DeleteFileW(cat);
+    RemoveDirectoryW(dir);
+    return ok;
+}
+
+/* USB mass storage: the inbox winusb.inf node does not take it */
+static int is_storage(const wchar_t *inst, const Info *in)
+{
+    SP_DEVINFO_DATA d;
+    HDEVINFO h;
+    wchar_t *compat = NULL;
+    int r;
+
+    if (!_wcsicmp(in->service, L"USBSTOR") ||
+        !_wcsicmp(in->service, L"UASPStor")) {
+        return 1;
+    }
+    h = open_dev(inst, &d);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    compat = dev_prop(h, &d, SPDRP_COMPATIBLEIDS);
+    SetupDiDestroyDeviceInfoList(h);
+    r = msz_has_prefix(compat, L"USB\\Class_08");
+    free(compat);
+    return r;
 }
 
 /* ---- bind -------------------------------------------------------------- */
@@ -1222,7 +2089,9 @@ static int find_winusb(HDEVINFO h, SP_DEVINFO_DATA *d, DWORD type,
         *err = GetLastError();
         return -1;
     }
-    if (!SetupDiBuildDriverInfoList(h, d, type)) {
+    if (!sb(type == SPDIT_CLASSDRIVER ? "SetupDiBuildDriverInfoList(class)"
+                                      : "SetupDiBuildDriverInfoList(compat)",
+            SetupDiBuildDriverInfoList(h, d, type))) {
         *err = GetLastError();
         return -1;
     }
@@ -1240,27 +2109,123 @@ static int find_winusb(HDEVINFO h, SP_DEVINFO_DATA *d, DWORD type,
     }
     if (!found) {
         SetupDiDestroyDriverInfoList(h, d, type);
+        snote("winusb.inf driver node", "none");
+    } else {
+        char *t = utf8(drv->Description);
+        snote("winusb.inf driver node", t);
+        free(t);
     }
     return found;
 }
 
-static int cmd_bind(unsigned vid, unsigned pid)
+/*
+ * The inbox winusb.inf node on the whole device (the camera's route): 1 on
+ * WinUSB and running, 0 not. *changed when the device's class or driver
+ * was touched.
+ */
+static int class_bind(const Dev *dev, const Info *before, const char **how,
+                      BOOL *reboot, int *changed, Info *after)
 {
     DiInstallDevice_fn install =
         (DiInstallDevice_fn)(void (*)(void))newdev_fn("DiInstallDevice");
-    J j;
-    Dev dev;
-    Info before, after;
     wchar_t inf[MAX_PATH + 32];
     UINT wl;
     SP_DEVINFO_DATA d;
     SP_DRVINFO_DATA_W drv;
     HDEVINFO h;
     DWORD err = 0, type = SPDIT_COMPATDRIVER;
-    BOOL reboot = FALSE, rb;
-    const char *how = NULL;
-    const char *step = NULL;
-    int r, changed = 0;
+    BOOL rb;
+    int r;
+
+    *how = "compatible";
+    if (!sb("GetProcAddress(DiInstallDevice)", install != NULL)) {
+        return 0;
+    }
+    wl = GetWindowsDirectoryW(inf, MAX_PATH);
+    if (wl == 0 || wl >= MAX_PATH) {
+        return 0;
+    }
+    wcscat(inf, L"\\INF\\winusb.inf");
+    if (!sb("GetFileAttributesW(winusb.inf)",
+            GetFileAttributesW(inf) != INVALID_FILE_ATTRIBUTES)) {
+        return 0;
+    }
+    h = open_dev(dev->inst, &d);
+    if (!sb("SetupDiOpenDeviceInfoW", h != INVALID_HANDLE_VALUE)) {
+        return 0;
+    }
+
+    /* 1: compatible list (devices that report USB\MS_COMP_WINUSB) */
+    r = find_winusb(h, &d, SPDIT_COMPATDRIVER, inf, &drv, &err);
+    /* 2: class list; matches when the device is already class USBDevice */
+    if (r != 1) {
+        type = SPDIT_CLASSDRIVER;
+        r = find_winusb(h, &d, type, inf, &drv, &err);
+        *how = "class";
+    }
+    /* 3: move the device to class USBDevice, then the class list */
+    if (r == 0 && _wcsicmp(before->clsguid, CLS_USBDEVICE) != 0) {
+        const wchar_t *g = CLS_USBDEVICE;
+        if (before->clsguid[0]) {
+            save_class(h, &d, before->clsguid);
+        }
+        if (sb("SetupDiSetDeviceRegistryPropertyW(CLASSGUID)",
+               SetupDiSetDeviceRegistryPropertyW(h, &d, SPDRP_CLASSGUID,
+                                                 (const BYTE *)g,
+                                                 (DWORD)((wcslen(g) + 1) *
+                                                         sizeof(wchar_t))))) {
+            *changed = 1;
+            r = find_winusb(h, &d, type, inf, &drv, &err);
+            *how = "class-guid";
+        }
+    }
+
+    if (r == 1) {
+        if (sb("SetupDiSetSelectedDriverW",
+               SetupDiSetSelectedDriverW(h, &d, &drv))) {
+            rb = FALSE;
+            sstate("state before install", d.DevInst);
+            *changed = 1;
+            if (sb("DiInstallDevice", install(NULL, h, &d, &drv, 0, &rb)) &&
+                rb) {
+                snote("DiInstallDevice", "restart requested");
+                *reboot = TRUE;
+            }
+            sstate("state after install", d.DevInst);
+        }
+        SetupDiDestroyDriverInfoList(h, &d, type);
+    }
+    SetupDiDestroyDeviceInfoList(h);
+
+    /*
+     * DiInstallDevice may return TRUE and install nothing (no Device
+     * Install section in setupapi.dev.log): only a running WinUSB devnode
+     * with an INF counts.
+     */
+    get_info(dev->inst, after);
+    if (after->started && is_winusb(after->service) && after->inf[0]) {
+        return 1;
+    }
+    {
+        char t[160], *svc = utf8(after->service), *in = utf8(after->inf);
+        snprintf(t, sizeof t, "service '%s' inf '%s' started %d problem %lu",
+                 svc, in, after->started, (unsigned long)after->problem);
+        snote("check after install", t);
+        free(svc);
+        free(in);
+    }
+    return 0;
+}
+
+static int cmd_bind(unsigned vid, unsigned pid)
+{
+    J j;
+    Dev dev;
+    Info before, after;
+    BOOL reboot = FALSE;
+    wchar_t now[MAX_DEVICE_ID_LEN];
+    int r, changed = 0, storage;
+    const char *how = "";
 
     j_open(&j);
     j_s(&j, "op", "bind");
@@ -1269,9 +2234,6 @@ static int cmd_bind(unsigned vid, unsigned pid)
         j_b(&j, "ok", 0);
         j_s(&j, "error", "needs administrator: run elevated");
         return finish(&j, EXIT_NOTADMIN);
-    }
-    if (!install) {
-        return fail(&j, "newdev.dll has no DiInstallDevice", GetLastError());
     }
     r = find_target(vid, pid, &dev, &j);
     if (r) {
@@ -1287,124 +2249,47 @@ static int cmd_bind(unsigned vid, unsigned pid)
         j_info(&j, &before);
         return finish(&j, EXIT_DONE);
     }
+    storage = is_storage(dev.inst, &before);
+    j_b(&j, "storage", storage);
 
     /* A held device would need a restart to change driver */
     r = quiesce(dev.dn, &j);
     if (r) {
         return r;
     }
-    if (!restart(dev.dn)) {
-        return fail(&j, "device stopped and did not start again: replug it",
-                    0);
-    }
 
-    wl = GetWindowsDirectoryW(inf, MAX_PATH);
-    if (wl == 0 || wl >= MAX_PATH) {
-        return fail(&j, "no Windows directory", GetLastError());
-    }
-    wcscat(inf, L"\\INF\\winusb.inf");
-    if (GetFileAttributesW(inf) == INVALID_FILE_ATTRIBUTES) {
-        return fail(&j, "winusb.inf not found", GetLastError());
-    }
-
-    h = open_dev(dev.inst, &d);
-    if (h == INVALID_HANDLE_VALUE) {
-        return fail(&j, "cannot open device", GetLastError());
-    }
-
-    /* 1: compatible list (devices that report USB\MS_COMP_WINUSB) */
-    r = find_winusb(h, &d, SPDIT_COMPATDRIVER, inf, &drv, &err);
-    how = "compatible";
-    /* 2: class list; matches when the device is already class USBDevice */
-    if (r != 1) {
-        type = SPDIT_CLASSDRIVER;
-        r = find_winusb(h, &d, type, inf, &drv, &err);
-        how = "class";
-    }
-    /* 3: move the device to class USBDevice, then the class list */
-    if (r == 0 && _wcsicmp(before.clsguid, CLS_USBDEVICE) != 0) {
-        const wchar_t *g = CLS_USBDEVICE;
-        if (before.clsguid[0]) {
-            save_class(h, &d, before.clsguid);
-        }
-        if (SetupDiSetDeviceRegistryPropertyW(h, &d, SPDRP_CLASSGUID,
-                                              (const BYTE *)g,
-                                              (DWORD)((wcslen(g) + 1) *
-                                                      sizeof(wchar_t)))) {
-            changed = 1;
-            r = find_winusb(h, &d, type, inf, &drv, &err);
-            how = "class-guid";
-        } else {
-            j_err(&j, "class_guid_change", GetLastError());
-        }
-    }
-    /* 4: null driver (device without class settings), then the class list */
-    if (r == 0) {
-        rb = FALSE;
-        if (install(NULL, h, &d, NULL, DIIDFLAG_INSTALLNULLDRIVER_, &rb)) {
-            changed = 1;
-            if (rb) {
-                reboot = TRUE;
+    if (!storage) {
+        if (!restart(dev.dn)) {
+            DWORD err = 0;
+            /* Enumerate it afresh on its own driver */
+            if (!remove_dev(dev.inst, NULL, NULL, &reboot, &err) || reboot ||
+                !wait_back(dev.inst, vid, pid, &after, now, 30, WANT_ANY)) {
+                j_b(&j, "reboot", reboot);
+                return fail(&j, "device stopped and did not start again: "
+                                "replug it", err);
             }
-            SetupDiDestroyDeviceInfoList(h);
-            h = open_dev(dev.inst, &d);
-            if (h == INVALID_HANDLE_VALUE) {
-                err = GetLastError();
-                step = "reopen after null driver";
-                r = -1;
-            } else {
-                r = find_winusb(h, &d, type, inf, &drv, &err);
-                how = "null-driver";
-            }
-        } else {
-            j_err(&j, "null_driver", GetLastError());
+            wcsncpy(dev.inst, now, MAX_DEVICE_ID_LEN - 1);
+            scr("CM_Locate_DevNodeW", CM_Locate_DevNodeW(&dev.dn, dev.inst,
+                                                         CM_LOCATE_DEVNODE_NORMAL));
         }
+        if (class_bind(&dev, &before, &how, &reboot, &changed, &after)) {
+            j_s(&j, "method", how);
+            j_info(&j, &after);
+            return done(&j, reboot);
+        }
+        j_s(&j, "class_route", how);
+        reboot = FALSE;
     }
 
-    if (r == 1) {
-        if (!SetupDiSetSelectedDriverW(h, &d, &drv)) {
-            err = GetLastError();
-            step = "select driver";
-            r = -1;
-        } else {
-            rb = FALSE;
-            if (!install(NULL, h, &d, &drv, 0, &rb)) {
-                err = GetLastError();
-                step = "install driver";
-                r = -1;
-            } else if (rb) {
-                reboot = TRUE;
-            }
-        }
-        SetupDiDestroyDriverInfoList(h, &d, type);
-    } else if (r < 0 && !step) {
-        step = "build driver list";
+    /* Own signed package naming this device */
+    if (inf_bind(&dev, &before, &j, &reboot, &after)) {
+        j_info(&j, &after);
+        return done(&j, reboot);
     }
-    if (h != INVALID_HANDLE_VALUE) {
-        SetupDiDestroyDeviceInfoList(h);
-    }
-
-    if (r != 1) {
-        j_s(&j, "method", how);
-        if (changed) {
-            restore(&j, &dev, &reboot);
-        }
-        j_b(&j, "reboot", reboot);
-        if (r == 0) {
-            return fail(&j, "no WinUSB driver node for this device", 0);
-        }
-        return fail(&j, step, err);
-    }
-
-    get_info(dev.inst, &after);
-    j_s(&j, "method", how);
-    j_info(&j, &after);
-    if (!is_winusb(after.service)) {
-        restore(&j, &dev, &reboot);
-        j_b(&j, "reboot", reboot);
-        return fail(&j, "installed, but the device is not on WinUSB", 0);
-    }
-    return done(&j, reboot);
+    reboot = FALSE;
+    restore(&j, &dev, &reboot);
+    j_b(&j, "reboot", reboot);
+    return fail(&j, "the device did not end up on WinUSB", 0);
 }
 
 /* ---- unbind ------------------------------------------------------------ */
@@ -1467,7 +2352,7 @@ static int remove_absent(unsigned vid, unsigned pid, J *j, BOOL *reboot)
 
 /* The device back after the rescan, with a driver other than WinUSB. */
 static int wait_back(const wchar_t *inst, unsigned vid, unsigned pid,
-                     Info *in, wchar_t *now, int seconds)
+                     Info *in, wchar_t *now, int seconds, int want)
 {
     int t;
 
@@ -1489,8 +2374,9 @@ static int wait_back(const wchar_t *inst, unsigned vid, unsigned pid,
         if (pick >= 0 && (hits == 1 || !_wcsicmp(v[pick].inst, inst))) {
             wcsncpy(now, v[pick].inst, MAX_DEVICE_ID_LEN - 1);
             now[MAX_DEVICE_ID_LEN - 1] = 0;
-            if (get_info(now, in) && in->service[0] &&
-                !is_winusb(in->service) && in->problem == 0) {
+            if (get_info(now, in) && in->started && in->service[0] &&
+                (want == WANT_ANY ||
+                 (want == WANT_WINUSB) == (is_winusb(in->service) != 0))) {
                 free(v);
                 return 1;
             }
@@ -1507,7 +2393,7 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     Dev *v, dev;
     Info before, after;
     wchar_t now[MAX_DEVICE_ID_LEN];
-    int n, i, hits = 0, r, absent;
+    int n, i, hits = 0, r, absent, ours;
     BOOL reboot = FALSE;
     DWORD err = 0;
 
@@ -1559,15 +2445,21 @@ static int cmd_unbind(unsigned vid, unsigned pid)
         return r;
     }
     remove_absent(vid, pid, &j, &reboot);
-    if (!remove_dev(dev.inst, &j, &reboot, &err)) {
+    ours = !_wcsicmp(before.provider, PROVIDER);
+    if (!remove_dev(dev.inst, ours ? before.inf : NULL, &j, &reboot, &err)) {
         restart(dev.dn);
         j_b(&j, "reboot", reboot);
         return fail(&j, "cannot remove device", err);
     }
+    if (ours) {
+        wchar_t name[64];
+        cert_name(name, 64, vid, pid);
+        cert_remove(name, &j, "certs_removed");
+    }
     if (reboot) {
         return done(&j, reboot);
     }
-    if (!wait_back(dev.inst, vid, pid, &after, now, 30)) {
+    if (!wait_back(dev.inst, vid, pid, &after, now, 30, WANT_WINDOWS)) {
         if (now[0]) {
             j_w(&j, "instance_after", now);
             j_info(&j, &after);
@@ -1581,13 +2473,57 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     return done(&j, reboot);
 }
 
+/* ---- cleanup-cert -------------------------------------------------------- */
+
+/* Remove leftover certificates once no device uses an own package. */
+static int cmd_cleanup_cert(void)
+{
+    J j;
+    Dev *v;
+    Buf bound = { 0 };
+    int n, i, nb = 0;
+
+    j_open(&j);
+    j_s(&j, "op", "cleanup-cert");
+    if (!is_elevated()) {
+        j_b(&j, "ok", 0);
+        j_s(&j, "error", "needs administrator: run elevated");
+        return finish(&j, EXIT_NOTADMIN);
+    }
+    n = enum_usb(0, &v);
+    b_str(&bound, "[");
+    for (i = 0; i < n; i++) {
+        Info in;
+        if (get_info(v[i].inst, &in) && !_wcsicmp(in.provider, PROVIDER)) {
+            char id[16];
+            snprintf(id, sizeof id, "%04x:%04x", v[i].vid, v[i].pid);
+            b_str(&bound, nb++ ? "," : "");
+            b_jstr(&bound, id);
+        }
+    }
+    b_str(&bound, "]");
+    free(v);
+    if (nb) {
+        j_b(&j, "ok", 0);
+        j_s(&j, "refuse", "still bound");
+        j_raw(&j, "bound", bound.p);
+        free(bound.p);
+        return finish(&j, EXIT_REFUSED);
+    }
+    free(bound.p);
+    cert_remove(PROVIDER L" ", &j, "certs_removed");
+    j_b(&j, "ok", 1);
+    return finish(&j, EXIT_DONE);
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 static int usage(void)
 {
     fputs("usage: winusb-switch list [--out FILE]\n"
           "       winusb-switch bind VVVV:PPPP [--out FILE]\n"
-          "       winusb-switch unbind VVVV:PPPP [--out FILE]\n", stderr);
+          "       winusb-switch unbind VVVV:PPPP [--out FILE]\n"
+          "       winusb-switch cleanup-cert [--out FILE]\n", stderr);
     return EXIT_USAGE;
 }
 
@@ -1597,6 +2533,9 @@ static int run(int argc, wchar_t **argv)
 
     if (argc == 2 && !wcscmp(argv[1], L"list")) {
         return cmd_list();
+    }
+    if (argc == 2 && !wcscmp(argv[1], L"cleanup-cert")) {
+        return cmd_cleanup_cert();
     }
     if (argc != 3 || !parse_id(argv[2], &vid, &pid)) {
         return usage();

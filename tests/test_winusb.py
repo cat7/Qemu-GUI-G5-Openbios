@@ -23,7 +23,7 @@ from qemugui.g5_model import Machine, UsbHostDevice  # noqa: E402
 
 LIST = r'''
 {"id":"046d:0990","instance":"USB\\VID_046D&PID_0990\\8C5C6B32","description":"USB Composite Device","product":"Camera","speed":"high","class":"USB","class_guid":"{36fc9e60-c465-11cf-8056-444553540000}","service":"usbccgp","inf":"usb.inf","driver":"USB Composite Device","composite":true,"winusb":false,"problem":0,"functions":[{"class":"Camera","service":"usbvideo"},{"class":"MEDIA","service":"usbaudio"}],"refuse":""}
-{"id":"0e8d:1887","instance":"USB\\VID_0E8D&PID_1887\\5&1A2B3C&0&3","description":"WinUsb Device","product":"MT1887","speed":"high","class":"USBDevice","class_guid":"{88bae032-5a81-49f0-bc3d-a4ff138216d6}","service":"WinUSB","inf":"winusb.inf","driver":"WinUsb Device","composite":false,"winusb":true,"problem":0,"functions":[],"refuse":""}
+{"id":"0e8d:1887","instance":"USB\\VID_0E8D&PID_1887\\5&1A2B3C&0&3","description":"WinUsb Device","product":"MT1887","speed":"high","class":"USBDevice","class_guid":"{88bae032-5a81-49f0-bc3d-a4ff138216d6}","service":"WinUSB","inf":"oem42.inf","driver":"USB device 0e8d:1887 for QEMU (WinUSB)","provider":"winusb-switch","composite":false,"winusb":true,"problem":0,"functions":[],"refuse":""}
 
 {"id":"046d:c52b","instance":"USB\\VID_046D&PID_C52B\\6&1&0&2","description":"USB Composite Device","product":"USB Receiver","speed":"full","class":"USB","class_guid":"{36fc9e60-c465-11cf-8056-444553540000}","service":"usbccgp","inf":"usb.inf","driver":"USB Composite Device","composite":true,"winusb":false,"problem":0,"functions":[{"class":"HIDClass","service":"HidUsb"}],"refuse":"keyboard or mouse"}
 '''
@@ -45,7 +45,9 @@ class ListFormat(unittest.TestCase):
         self.assertEqual(dvd.state, "WinUSB (ready for QEMU)")
         self.assertEqual(cam.label, "Camera")
         self.assertTrue(dvd.winusb)
-        self.assertEqual(dvd.inf, "winusb.inf")
+        self.assertEqual(dvd.inf, "oem42.inf")
+        self.assertEqual(dvd.provider, "winusb-switch")
+        self.assertEqual(cam.provider, "")
         self.assertFalse(rx.switchable)
         self.assertEqual(rx.refuse, "keyboard or mouse")
 

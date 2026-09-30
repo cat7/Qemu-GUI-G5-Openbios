@@ -62,7 +62,7 @@ Result: a single windowed executable, `dist/Qemu-system-ppc64 G5 GUI.exe`.
 Put it alongside `qemu-system-ppc64.exe`.
 
 USB switch helper, from `winusb/` with a 64-bit mingw-w64 cross compiler:
-`x86_64-w64-mingw32-gcc -O2 -Wall -municode -o winusb-switch.exe winusb-switch.c -lsetupapi -lcfgmgr32`
+`x86_64-w64-mingw32-gcc -O2 -Wall -municode -o winusb-switch.exe winusb-switch.c -lsetupapi -lcfgmgr32 -lcrypt32 -lwintrust`
 
 ## Tests
 

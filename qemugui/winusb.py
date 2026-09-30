@@ -49,6 +49,7 @@ class WinDevice:
     service: str = ""
     inf: str = ""
     driver: str = ""
+    provider: str = ""          # "winusb-switch": its own signed package
     composite: bool = False
     winusb: bool = False
     problem: int = 0
@@ -104,6 +105,7 @@ def parse_list(text: str) -> list[WinDevice]:
             service=str(o.get("service", "")),
             inf=str(o.get("inf", "")),
             driver=str(o.get("driver", "")),
+            provider=str(o.get("provider", "")),
             composite=bool(o.get("composite", False)),
             winusb=bool(o.get("winusb", False)),
             problem=int(o.get("problem", 0)),
