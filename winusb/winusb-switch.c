@@ -7,8 +7,9 @@
  *   winusb-switch unbind VVVV:PPPP    (administrator)
  *
  * stdout: one JSON object per line.
- * Exit: 0 done, 3010 done but Windows wants a restart, 1 failed, 2 usage,
- * 3 refused, 4 not elevated.
+ * Exit: 0 done, 3010 done but the device must be replugged (or Windows
+ * restarted) to finish, 1 failed, 2 usage, 3 refused, 4 not elevated,
+ * 5 in use (a program holds the device; nothing changed).
  *
  * Build (MSYS2 UCRT64, 64-bit only; 32-bit on 64-bit Windows cannot
  * install drivers):
@@ -40,6 +41,7 @@
 #define EXIT_USAGE     2
 #define EXIT_REFUSED   3
 #define EXIT_NOTADMIN  4
+#define EXIT_INUSE     5
 #define EXIT_REBOOT    3010
 
 /* newdev.dll, resolved at run time */
@@ -55,6 +57,12 @@ typedef BOOL (WINAPI *DiUninstallDevice_fn)(HWND, HDEVINFO, PSP_DEVINFO_DATA,
 #define CLS_MOUSE     L"{4d36e96f-e325-11ce-bfc1-08002be10318}"
 #define CLS_DISK      L"{4d36e967-e325-11ce-bfc1-08002be10318}"
 #define CLS_BLUETOOTH L"{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}"
+#define CLS_USB       L"{36fc9e60-c465-11cf-8056-444553540000}"
+
+/* Class GUID before bind, in the device's hardware key */
+#define SAVED_CLASS   L"WinusbSwitchClassGUID"
+
+#define PENDING_MSG "replug the device (or restart Windows) to finish"
 
 /* DEVPKEY_Device_DriverDesc, _DriverInfPath, _BusReportedDeviceDesc */
 static const DEVPROPKEY PK_DRIVERDESC = {
@@ -546,7 +554,8 @@ static int get_info(const wchar_t *inst, Info *in)
     dev_prop_into(h, &d, SPDRP_CLASSGUID, in->clsguid, 64);
     dev_prop_into(h, &d, SPDRP_SERVICE, in->service, 64);
     compat = dev_prop(h, &d, SPDRP_COMPATIBLEIDS);
-    in->composite = msz_has_prefix(compat, L"USB\\COMPOSITE");
+    in->composite = msz_has_prefix(compat, L"USB\\COMPOSITE") &&
+                    !_wcsicmp(in->service, L"usbccgp");
     free(compat);
     in->present = dn_present(d.DevInst, &in->problem);
     SetupDiDestroyDeviceInfoList(h);
@@ -585,10 +594,22 @@ static void refuse(Walk *w, const char *why)
 /* The node and everything below it: keyboards, mice, hubs, Bluetooth, disks */
 static void walk(DEVINST dn, int depth, Walk *w)
 {
-    wchar_t *guid = cm_prop(dn, CM_DRP_CLASSGUID);
-    wchar_t *svc = cm_prop(dn, CM_DRP_SERVICE);
-    wchar_t *compat = cm_prop(dn, CM_DRP_COMPATIBLEIDS);
+    wchar_t *guid, *svc, *compat;
     DEVINST child, next;
+
+    if (depth > 0) {
+        /* A whole USB device below a hub is not a function of this one */
+        wchar_t *hw = cm_prop(dn, CM_DRP_HARDWAREID);
+        unsigned v, p;
+        int other = usb_ids(hw, &v, &p);
+        free(hw);
+        if (other) {
+            return;
+        }
+    }
+    guid = cm_prop(dn, CM_DRP_CLASSGUID);
+    svc = cm_prop(dn, CM_DRP_SERVICE);
+    compat = cm_prop(dn, CM_DRP_COMPATIBLEIDS);
 
     if (guid) {
         if (!_wcsicmp(guid, CLS_KEYBOARD) || !_wcsicmp(guid, CLS_MOUSE)) {
@@ -816,11 +837,145 @@ static void rescan(DEVINST parent)
     }
 }
 
-/* Remove the devnode so Windows matches a driver afresh, then rescan. */
-static int remove_dev(const wchar_t *inst, BOOL *reboot, DWORD *err)
+static const char *veto_text(int t)
+{
+    static const char *n[] = {
+        "unknown", "legacy device", "pending close", "windows app",
+        "windows service", "outstanding open", "device", "driver",
+        "illegal device request", "insufficient power", "non-disableable",
+        "legacy driver", "insufficient rights", "already removed",
+    };
+    return t >= 0 && t < (int)(sizeof n / sizeof n[0]) ? n[t] : "unknown";
+}
+
+/*
+ * Stop the device and its functions as "safely remove" does. 0 done;
+ * otherwise an exit code after writing the reason into j. A veto (an open
+ * handle, usually) changes nothing.
+ */
+static int quiesce(DEVINST dn, J *j)
+{
+    PNP_VETO_TYPE vt = PNP_VetoTypeUnknown;
+    wchar_t name[MAX_PATH];
+    CONFIGRET cr;
+    char t[16];
+
+    name[0] = 0;
+    cr = CM_Query_And_Remove_SubTreeW(dn, &vt, name, MAX_PATH,
+                                      CM_REMOVE_UI_NOT_OK);
+    if (cr == CR_SUCCESS) {
+        return 0;
+    }
+    j_b(j, "ok", 0);
+    if (cr == CR_REMOVE_VETOED) {
+        name[MAX_PATH - 1] = 0;
+        j_s(j, "refuse", "in use");
+        j_i(j, "veto_type", (long long)vt);
+        j_s(j, "veto", veto_text((int)vt));
+        j_w(j, "veto_name", name);
+        j_s(j, "error", "device in use: quit the program using it first "
+                        "(QEMU, Camera app, ...)");
+        return finish(j, EXIT_INUSE);
+    }
+    snprintf(t, sizeof t, "0x%02lx", (unsigned long)cr);
+    j_s(j, "error", "cannot stop device");
+    j_s(j, "cr", t);
+    return finish(j, EXIT_FAILED);
+}
+
+/* Start a quiesced device again; 1 once it is present. */
+static int restart(DEVINST dn)
+{
+    DEVINST parent = 0;
+    int t;
+
+    CM_Get_Parent(&parent, dn, 0);
+    CM_Setup_DevNode(dn, CM_SETUP_DEVNODE_READY);
+    for (t = 0; t < 40; t++) {
+        if (dn_present(dn, NULL)) {
+            return 1;
+        }
+        if (t == 20) {
+            rescan(parent);
+        }
+        Sleep(250);
+    }
+    return 0;
+}
+
+static void save_class(HDEVINFO h, SP_DEVINFO_DATA *d, const wchar_t *guid)
+{
+    HKEY k = SetupDiCreateDevRegKeyW(h, d, DICS_FLAG_GLOBAL, 0, DIREG_DEV,
+                                     NULL, NULL);
+    if (k == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    RegSetValueExW(k, SAVED_CLASS, 0, REG_SZ, (const BYTE *)guid,
+                   (DWORD)((wcslen(guid) + 1) * sizeof(wchar_t)));
+    RegCloseKey(k);
+}
+
+static int load_class(HDEVINFO h, SP_DEVINFO_DATA *d, wchar_t *out,
+                      DWORD cch)
+{
+    HKEY k = SetupDiOpenDevRegKey(h, d, DICS_FLAG_GLOBAL, 0, DIREG_DEV,
+                                  KEY_READ);
+    DWORD type = 0, len = (cch - 1) * (DWORD)sizeof(wchar_t);
+    LONG r;
+
+    memset(out, 0, cch * sizeof(wchar_t));
+    if (k == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    r = RegQueryValueExW(k, SAVED_CLASS, NULL, &type, (BYTE *)out, &len);
+    RegCloseKey(k);
+    out[cch - 1] = 0;
+    return r == ERROR_SUCCESS && type == REG_SZ && out[0];
+}
+
+/*
+ * Put a USBDevice-class device back in its class from before bind (saved,
+ * or USB for a composite device), so a devnode whose removal is deferred
+ * loses the WinUSB software key and reinstalls in the right class.
+ */
+static void restore_class(HDEVINFO h, SP_DEVINFO_DATA *d, J *j)
+{
+    wchar_t cur[64], orig[64], *compat;
+
+    dev_prop_into(h, d, SPDRP_CLASSGUID, cur, 64);
+    if (_wcsicmp(cur, CLS_USBDEVICE) != 0) {
+        return;
+    }
+    if (!load_class(h, d, orig, 64)) {
+        compat = dev_prop(h, d, SPDRP_COMPATIBLEIDS);
+        if (msz_has_prefix(compat, L"USB\\COMPOSITE")) {
+            wcscpy(orig, CLS_USB);
+        }
+        free(compat);
+    }
+    if (!orig[0] || !_wcsicmp(orig, CLS_USBDEVICE)) {
+        return;
+    }
+    if (SetupDiSetDeviceRegistryPropertyW(h, d, SPDRP_CLASSGUID,
+                                          (const BYTE *)orig,
+                                          (DWORD)((wcslen(orig) + 1) *
+                                                  sizeof(wchar_t)))) {
+        if (j) {
+            j_w(j, "class_restored", orig);
+        }
+    } else if (j) {
+        j_err(j, "class_restore", GetLastError());
+    }
+}
+
+/*
+ * Remove the devnode so Windows matches a driver afresh; rescan unless the
+ * removal is deferred (*reboot set).
+ */
+static int remove_dev(const wchar_t *inst, J *j, BOOL *reboot, DWORD *err)
 {
     DiUninstallDevice_fn uninstall =
-        (DiUninstallDevice_fn)newdev_fn("DiUninstallDevice");
+        (DiUninstallDevice_fn)(void (*)(void))newdev_fn("DiUninstallDevice");
     SP_DEVINFO_DATA d;
     HDEVINFO h;
     DEVINST parent = 0;
@@ -839,6 +994,7 @@ static int remove_dev(const wchar_t *inst, BOOL *reboot, DWORD *err)
     if (CM_Get_Parent(&parent, d.DevInst, 0) != CR_SUCCESS) {
         parent = 0;
     }
+    restore_class(h, &d, j);
     if (!uninstall(NULL, h, &d, 0, &rb)) {
         *err = GetLastError();
         SetupDiDestroyDeviceInfoList(h);
@@ -847,6 +1003,7 @@ static int remove_dev(const wchar_t *inst, BOOL *reboot, DWORD *err)
     SetupDiDestroyDeviceInfoList(h);
     if (rb) {
         *reboot = TRUE;
+        return 1;
     }
     rescan(parent);
     return 1;
@@ -862,13 +1019,31 @@ static void restore(J *j, const Dev *dev, BOOL *reboot)
     Info in;
     wchar_t now[MAX_DEVICE_ID_LEN];
 
-    if (!remove_dev(dev->inst, reboot, &err)) {
+    if (!remove_dev(dev->inst, j, reboot, &err)) {
         j_b(j, "restored", 0);
         j_err(j, "restore_detail", err);
         return;
     }
+    if (*reboot) {
+        j_b(j, "restored", 0);
+        return;
+    }
     j_b(j, "restored", wait_back(dev->inst, dev->vid, dev->pid, &in, now, 30));
     j_w(j, "service_after", in.service);
+}
+
+/* ok; "pending_reboot" when Windows finishes the change only on replug */
+static int done(J *j, BOOL reboot)
+{
+    j_b(j, "reboot", reboot);
+    j_b(j, "ok", 1);
+    if (reboot) {
+        j_s(j, "status", "pending_reboot");
+        j_s(j, "message", PENDING_MSG);
+        return finish(j, EXIT_REBOOT);
+    }
+    j_s(j, "status", "done");
+    return finish(j, EXIT_DONE);
 }
 
 /* ---- bind -------------------------------------------------------------- */
@@ -961,7 +1136,7 @@ static int find_winusb(HDEVINFO h, SP_DEVINFO_DATA *d, DWORD type,
 static int cmd_bind(unsigned vid, unsigned pid)
 {
     DiInstallDevice_fn install =
-        (DiInstallDevice_fn)newdev_fn("DiInstallDevice");
+        (DiInstallDevice_fn)(void (*)(void))newdev_fn("DiInstallDevice");
     J j;
     Dev dev;
     Info before, after;
@@ -1002,6 +1177,16 @@ static int cmd_bind(unsigned vid, unsigned pid)
         return finish(&j, EXIT_DONE);
     }
 
+    /* A held device would need a restart to change driver */
+    r = quiesce(dev.dn, &j);
+    if (r) {
+        return r;
+    }
+    if (!restart(dev.dn)) {
+        return fail(&j, "device stopped and did not start again: replug it",
+                    0);
+    }
+
     wl = GetWindowsDirectoryW(inf, MAX_PATH);
     if (wl == 0 || wl >= MAX_PATH) {
         return fail(&j, "no Windows directory", GetLastError());
@@ -1028,6 +1213,9 @@ static int cmd_bind(unsigned vid, unsigned pid)
     /* 3: move the device to class USBDevice, then the class list */
     if (r == 0 && _wcsicmp(before.clsguid, CLS_USBDEVICE) != 0) {
         const wchar_t *g = CLS_USBDEVICE;
+        if (before.clsguid[0]) {
+            save_class(h, &d, before.clsguid);
+        }
         if (SetupDiSetDeviceRegistryPropertyW(h, &d, SPDRP_CLASSGUID,
                                               (const BYTE *)g,
                                               (DWORD)((wcslen(g) + 1) *
@@ -1105,9 +1293,7 @@ static int cmd_bind(unsigned vid, unsigned pid)
         j_b(&j, "reboot", reboot);
         return fail(&j, "installed, but the device is not on WinUSB", 0);
     }
-    j_b(&j, "reboot", reboot);
-    j_b(&j, "ok", 1);
-    return finish(&j, reboot ? EXIT_REBOOT : EXIT_DONE);
+    return done(&j, reboot);
 }
 
 /* ---- unbind ------------------------------------------------------------ */
@@ -1235,14 +1421,12 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     }
     free(v);
 
-    absent = remove_absent(vid, pid, &j, &reboot);
     if (hits == 0) {
+        absent = remove_absent(vid, pid, &j, &reboot);
         if (absent) {
             rescan(0);
             j_b(&j, "present", 0);
-            j_b(&j, "reboot", reboot);
-            j_b(&j, "ok", 1);
-            return finish(&j, reboot ? EXIT_REBOOT : EXIT_DONE);
+            return done(&j, reboot);
         }
         return fail(&j, "no such device present", 0);
     }
@@ -1258,23 +1442,32 @@ static int cmd_unbind(unsigned vid, unsigned pid)
         j_s(&j, "refuse", "not on WinUSB");
         return finish(&j, EXIT_REFUSED);
     }
-    if (!remove_dev(dev.inst, &reboot, &err)) {
+    /* Held open (QEMU still running): refuse, change nothing */
+    r = quiesce(dev.dn, &j);
+    if (r) {
+        return r;
+    }
+    remove_absent(vid, pid, &j, &reboot);
+    if (!remove_dev(dev.inst, &j, &reboot, &err)) {
+        restart(dev.dn);
         j_b(&j, "reboot", reboot);
         return fail(&j, "cannot remove device", err);
     }
+    if (reboot) {
+        return done(&j, reboot);
+    }
     if (!wait_back(dev.inst, vid, pid, &after, now, 30)) {
-        j_b(&j, "reboot", reboot);
         if (now[0]) {
             j_w(&j, "instance_after", now);
             j_info(&j, &after);
         }
-        return fail(&j, "device did not come back on a Windows driver", 0);
+        j_b(&j, "reboot", reboot);
+        return fail(&j, "device did not come back on a Windows driver: "
+                        "replug it", 0);
     }
     j_w(&j, "instance_after", now);
     j_info(&j, &after);
-    j_b(&j, "reboot", reboot);
-    j_b(&j, "ok", 1);
-    return finish(&j, reboot ? EXIT_REBOOT : EXIT_DONE);
+    return done(&j, reboot);
 }
 
 /* ---- main -------------------------------------------------------------- */

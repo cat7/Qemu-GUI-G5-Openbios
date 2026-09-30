@@ -56,6 +56,14 @@ class ListFormat(unittest.TestCase):
         r = wl.parse_result('{"op":"unbind","id":"046d:0990","ok":false,'
                             '"refuse":"not on WinUSB"}')
         self.assertEqual(r["refuse"], "not on WinUSB")
+        r = wl.parse_result('{"op":"unbind","id":"046d:0990","ok":false,'
+                            '"refuse":"in use","veto_type":5,'
+                            '"veto":"outstanding open",'
+                            '"veto_name":"USB\\\\VID_046D&PID_0990\\\\1"}')
+        self.assertEqual(r["veto"], "outstanding open")
+        r = wl.parse_result('{"op":"unbind","ok":true,"reboot":true,'
+                            '"status":"pending_reboot"}')
+        self.assertEqual(r["status"], "pending_reboot")
         with self.assertRaises(ValueError):
             wl.parse_result('{"ok":true}')
         with self.assertRaises(ValueError):

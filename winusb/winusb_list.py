@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 ID_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{4}$")
 
 # Exit codes of winusb-switch
-DONE, FAILED, USAGE, REFUSED, NOT_ADMIN, REBOOT = 0, 1, 2, 3, 4, 3010
+DONE, FAILED, USAGE, REFUSED, NOT_ADMIN, IN_USE = 0, 1, 2, 3, 4, 5
+PENDING = 3010      # done once the device is replugged
 
 
 @dataclass
