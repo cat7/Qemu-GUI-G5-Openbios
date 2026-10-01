@@ -6,6 +6,10 @@
  *   winusb-switch bind VVVV:PPPP [--out FILE]      (administrator)
  *   winusb-switch unbind VVVV:PPPP [--out FILE]    (administrator)
  *   winusb-switch cleanup-cert [--out FILE]        (administrator)
+ *   winusb-switch log
+ *
+ * bind, unbind and cleanup-cert append their result to
+ * %ProgramData%\winusb-switch\log.jsonl.
  *
  * stdout: one JSON object per line; --out writes the same lines to FILE
  * (an elevated run's stdout cannot be read by the program that started it).
@@ -64,6 +68,9 @@ typedef BOOL (WINAPI *DiUninstallDevice_fn)(HWND, HDEVINFO, PSP_DEVINFO_DATA,
 #define CLS_DISK      L"{4d36e967-e325-11ce-bfc1-08002be10318}"
 #define CLS_BLUETOOTH L"{e0cbf06c-cd8b-4647-bb8a-263b43f0f974}"
 #define CLS_USB       L"{36fc9e60-c465-11cf-8056-444553540000}"
+
+/* Provider of the own packages (see inf_bind) */
+#define PROVIDER      L"winusb-switch"
 
 /* Class GUID before bind, in the device's hardware key */
 #define SAVED_CLASS   L"WinusbSwitchClassGUID"
@@ -372,9 +379,15 @@ static void sstate(const char *label, DEVINST dn)
 }
 
 /* Close, print one line, free. */
+static int log_results;
+static void log_append(const char *line, size_t len);
+
 static void j_print(J *j)
 {
     b_str(&j->b, "}\n");
+    if (log_results) {
+        log_append(j->b.p, j->b.n);
+    }
     fwrite(j->b.p, 1, j->b.n, stdout);
     if (out_file) {
         fwrite(j->b.p, 1, j->b.n, out_file);
@@ -793,6 +806,7 @@ typedef struct {
     const char *refuse;
     Buf funcs;
     int nfuncs;
+    int self_hid, ifaces, hid_ifaces;   /* interface functions, HID ones */
 } Walk;
 
 static void refuse(Walk *w, const char *why)
@@ -808,11 +822,17 @@ static void walk(DEVINST dn, int depth, Walk *w)
     wchar_t *guid, *svc, *compat;
     DEVINST child, next;
 
+    int iface = 0;
+
     if (depth > 0) {
         /* A whole USB device below a hub is not a function of this one */
         wchar_t *hw = cm_prop(dn, CM_DRP_HARDWAREID);
         unsigned v, p;
         int other = usb_ids(hw, &v, &p);
+        const wchar_t *s;
+        for (s = hw; s && *s && !iface; s += wcslen(s) + 1) {
+            iface = wcsistr(s, L"&MI_") != NULL;
+        }
         free(hw);
         if (other) {
             return;
@@ -821,6 +841,17 @@ static void walk(DEVINST dn, int depth, Walk *w)
     guid = cm_prop(dn, CM_DRP_CLASSGUID);
     svc = cm_prop(dn, CM_DRP_SERVICE);
     compat = cm_prop(dn, CM_DRP_COMPATIBLEIDS);
+
+    /* A single-interface HID device, or a composite one's HID functions */
+    if (depth == 0 && msz_has_prefix(compat, L"USB\\Class_03")) {
+        w->self_hid = 1;
+    }
+    if (depth == 1 && iface) {
+        w->ifaces++;
+        if (msz_has_prefix(compat, L"USB\\Class_03")) {
+            w->hid_ifaces++;
+        }
+    }
 
     if (guid) {
         if (!_wcsicmp(guid, CLS_KEYBOARD) || !_wcsicmp(guid, CLS_MOUSE)) {
@@ -885,6 +916,10 @@ static const char *check(DEVINST dn, char **funcs)
     b_str(&w.funcs, "[");
     walk(dn, 0, &w);
     b_str(&w.funcs, "]");
+    /* LED controllers, macro pads: nothing but HID (a headset's HID stays) */
+    if (w.self_hid || (w.ifaces > 0 && w.hid_ifaces == w.ifaces)) {
+        refuse(&w, "HID only");
+    }
     if (funcs) {
         *funcs = w.funcs.p;
     } else {
@@ -969,8 +1004,59 @@ static FARPROC newdev_fn(const char *name)
     return m ? GetProcAddress(m, name) : NULL;
 }
 
+/* bind, unbind and cleanup-cert results go to %ProgramData%\winusb-switch */
+
+static int log_path(wchar_t *out, DWORD cch, int make_dir)
+{
+    DWORD n = GetEnvironmentVariableW(L"ProgramData", out, cch);
+    if (n == 0 || n + 32 >= cch) {
+        return 0;
+    }
+    wcscat(out, L"\\winusb-switch");
+    if (make_dir) {
+        CreateDirectoryW(out, NULL);
+    }
+    wcscat(out, L"\\log.jsonl");
+    return 1;
+}
+
+static void log_append(const char *line, size_t len)
+{
+    wchar_t path[MAX_PATH], old[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    HANDLE f;
+    DWORD wrote;
+
+    if (!log_path(path, MAX_PATH, 1)) {
+        return;
+    }
+    /* Keep it small: one older generation */
+    if (GetFileAttributesExW(path, GetFileExInfoStandard, &fa) &&
+        (fa.nFileSizeHigh || fa.nFileSizeLow > 1024 * 1024)) {
+        wcscpy(old, path);
+        wcscpy(old + wcslen(old) - 6, L".1.jsonl");
+        MoveFileExW(path, old, MOVEFILE_REPLACE_EXISTING);
+    }
+    f = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL,
+                    OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    WriteFile(f, line, (DWORD)len, &wrote, NULL);
+    CloseHandle(f);
+}
+
 static int finish(J *j, int code)
 {
+    if (log_results) {
+        SYSTEMTIME t;
+        char ts[48];
+        GetSystemTime(&t);
+        snprintf(ts, sizeof ts, "%04u-%02u-%02uT%02u:%02u:%02uZ", t.wYear,
+                 t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        j_s(j, "time", ts);
+        j_i(j, "exit", code);
+    }
     if (nsteps) {
         Buf b = { 0 };
         b_str(&b, "[");
@@ -997,7 +1083,8 @@ static int fail(J *j, const char *msg, DWORD err)
  * The one present device with this id. 0 and a filled Dev, or an exit code
  * after writing the reason into j. Refusals apply.
  */
-static int find_target(unsigned vid, unsigned pid, Dev *out, J *j)
+static int find_target(unsigned vid, unsigned pid, Dev *out, J *j,
+                       int refusals)
 {
     Dev *v;
     int n = enum_usb(1, &v), i, hits = 0;
@@ -1034,7 +1121,7 @@ static int find_target(unsigned vid, unsigned pid, Dev *out, J *j)
     }
     free(list.p);
     j_w(j, "instance", out->inst);
-    why = check(out->dn, NULL);
+    why = refusals ? check(out->dn, NULL) : NULL;
     if (why) {
         j_b(j, "ok", 0);
         j_s(j, "refuse", why);
@@ -1199,12 +1286,149 @@ static void restore_class(HDEVINFO h, SP_DEVINFO_DATA *d, J *j)
     }
 }
 
+/* User-mode USB drivers a device must not be left on after unbind */
+static int is_userdrv(const Info *in)
+{
+    return is_winusb(in->service) || !_wcsicmp(in->service, L"libusbK") ||
+           !_wcsicmp(in->service, L"libusb0") ||
+           !_wcsicmp(in->provider, PROVIDER);
+}
+
+/* An INF file's text as UTF-16 (UTF-16 with BOM, else ANSI); free() */
+static wchar_t *read_inf_text(const wchar_t *path)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD size, got = 0;
+    BYTE *raw;
+    wchar_t *w;
+    int n;
+
+    if (f == INVALID_HANDLE_VALUE) {
+        return NULL;
+    }
+    size = GetFileSize(f, NULL);
+    if (size == INVALID_FILE_SIZE || size > 4 * 1024 * 1024) {
+        CloseHandle(f);
+        return NULL;
+    }
+    raw = calloc(size + 4, 1);
+    if (!raw) {
+        oom();
+    }
+    if (!ReadFile(f, raw, size, &got, NULL)) {
+        got = 0;
+    }
+    CloseHandle(f);
+    if (got >= 2 && raw[0] == 0xff && raw[1] == 0xfe) {
+        w = calloc(got / 2 + 1, sizeof(wchar_t));
+        if (!w) {
+            oom();
+        }
+        memcpy(w, raw + 2, got - 2);
+        free(raw);
+        return w;
+    }
+    n = MultiByteToWideChar(CP_ACP, 0, (const char *)raw, (int)got, NULL, 0);
+    w = calloc((size_t)n + 1, sizeof(wchar_t));
+    if (!w) {
+        oom();
+    }
+    MultiByteToWideChar(CP_ACP, 0, (const char *)raw, (int)got, w, n);
+    free(raw);
+    return w;
+}
+
+/*
+ * Every published package (%WINDIR%\INF\oem*.inf) naming VID_v&PID_p: the
+ * own ones are deleted from the driver store, others only listed in j
+ * ("foreign_packages"). The number deleted.
+ */
+static int sweep_packages(unsigned vid, unsigned pid, J *j)
+{
+    wchar_t dir[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH], id[32];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+    Buf mine = { 0 }, foreign = { 0 };
+    int nmine = 0, nforeign = 0;
+    UINT wl = GetWindowsDirectoryW(dir, MAX_PATH - 40);
+
+    if (wl == 0 || wl >= MAX_PATH - 40) {
+        return 0;
+    }
+    wcscat(dir, L"\\INF");
+    swprintf(pattern, MAX_PATH, L"%ls\\oem*.inf", dir);
+    swprintf(id, 32, L"VID_%04X&PID_%04X", vid, pid);
+    b_str(&mine, "[");
+    b_str(&foreign, "[");
+    find = FindFirstFileW(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            wchar_t *text, provider[128];
+            HINF hinf;
+            char *name;
+
+            swprintf(path, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+            text = read_inf_text(path);
+            if (!text || !wcsistr(text, id)) {
+                free(text);
+                continue;
+            }
+            free(text);
+            provider[0] = 0;
+            hinf = SetupOpenInfFileW(path, NULL, INF_STYLE_WIN4, NULL);
+            if (hinf != INVALID_HANDLE_VALUE) {
+                if (!SetupGetLineTextW(NULL, hinf, L"Version", L"Provider",
+                                       provider, 128, NULL)) {
+                    provider[0] = 0;
+                }
+                SetupCloseInfFile(hinf);
+            }
+            name = utf8(fd.cFileName);
+            if (!_wcsicmp(provider, PROVIDER)) {
+                if (sb("SetupUninstallOEMInfW(sweep)",
+                       SetupUninstallOEMInfW(fd.cFileName, SUOI_FORCEDELETE,
+                                             NULL))) {
+                    b_str(&mine, nmine++ ? "," : "");
+                    b_jstr(&mine, name);
+                }
+            } else {
+                J e;
+                char *str;
+                j_open(&e);
+                j_s(&e, "inf", name);
+                j_w(&e, "provider", provider);
+                str = j_take(&e);
+                b_str(&foreign, nforeign++ ? "," : "");
+                b_str(&foreign, str);
+                free(str);
+            }
+            free(name);
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    b_str(&mine, "]");
+    b_str(&foreign, "]");
+    if (j) {
+        if (nmine) {
+            j_raw(j, "packages_removed", mine.p);
+        }
+        if (nforeign) {
+            j_raw(j, "foreign_packages", foreign.p);
+        }
+    }
+    free(mine.p);
+    free(foreign.p);
+    return nmine;
+}
+
 /*
  * Remove the devnode so Windows matches a driver afresh; rescan unless the
- * removal is deferred (*reboot set).
+ * removal is deferred (*reboot set). With a *sweep* id (vid << 16 | pid),
+ * every own package naming the device leaves the driver store first.
  */
 static int remove_dev(const wchar_t *inst, const wchar_t *oem_inf, J *j,
-                      BOOL *reboot, DWORD *err)
+                      BOOL *reboot, DWORD *err, long sweep)
 {
     DiUninstallDevice_fn uninstall =
         (DiUninstallDevice_fn)(void (*)(void))newdev_fn("DiUninstallDevice");
@@ -1237,6 +1461,10 @@ static int remove_dev(const wchar_t *inst, const wchar_t *oem_inf, J *j,
         snote("DiUninstallDevice", "removal deferred");
     }
     /* Before the rescan, or Windows picks the package again */
+    if (sweep >= 0) {
+        sweep_packages((unsigned)(sweep >> 16) & 0xffff,
+                       (unsigned)sweep & 0xffff, j);
+    }
     if (oem_inf && oem_inf[0]) {
         char *s = utf8(oem_inf);
         sb("SetupUninstallOEMInfW",
@@ -1267,7 +1495,8 @@ static void restore(J *j, const Dev *dev, BOOL *reboot)
     Info in;
     wchar_t now[MAX_DEVICE_ID_LEN];
 
-    if (!remove_dev(dev->inst, NULL, j, reboot, &err)) {
+    if (!remove_dev(dev->inst, NULL, j, reboot, &err,
+                    (long)(dev->vid << 16 | dev->pid))) {
         j_b(j, "restored", 0);
         j_err(j, "restore_detail", err);
         return;
@@ -1306,7 +1535,6 @@ static int done(J *j, BOOL reboot)
  * certificate.
  */
 
-#define PROVIDER      L"winusb-switch"
 #define INSTALLFLAG_FORCE_ 0x00000001
 
 typedef BOOL (WINAPI *UpdateDriver_fn)(HWND, LPCWSTR, LPCWSTR, DWORD, PBOOL);
@@ -1895,6 +2123,8 @@ static int inf_bind(const Dev *dev, const Info *before, J *j, BOOL *reboot,
     snprintf(cat_name, sizeof cat_name, "qemu_winusb_%04x_%04x.cat",
              dev->vid, dev->pid);
     j_s(j, "method", "inf");
+    /* Earlier packages for this device would compete with the new one */
+    sweep_packages(dev->vid, dev->pid, j);
 
     if (!update) {
         sb("GetProcAddress(UpdateDriverForPlugAndPlayDevicesW)", FALSE);
@@ -1970,7 +2200,7 @@ static int inf_bind(const Dev *dev, const Info *before, J *j, BOOL *reboot,
     if (!(after->started && is_winusb(after->service) &&
           !_wcsicmp(after->provider, PROVIDER))) {
         sstate("state after install", dev->dn);
-        if (!remove_dev(dev->inst, NULL, NULL, reboot, &err)) {
+        if (!remove_dev(dev->inst, NULL, NULL, reboot, &err, -1)) {
             goto out;
         }
         if (*reboot) {
@@ -2202,9 +2432,16 @@ static int class_bind(const Dev *dev, const Info *before, const char **how,
      * Install section in setupapi.dev.log): only a running WinUSB devnode
      * with an INF counts.
      */
-    get_info(dev->inst, after);
-    if (after->started && is_winusb(after->service) && after->inf[0]) {
-        return 1;
+    {
+        /* A composite device takes a moment to start on its new driver */
+        int t;
+        for (t = 0; t < 40; t++) {
+            get_info(dev->inst, after);
+            if (after->started && is_winusb(after->service) && after->inf[0]) {
+                return 1;
+            }
+            Sleep(250);
+        }
     }
     {
         char t[160], *svc = utf8(after->service), *in = utf8(after->inf);
@@ -2227,6 +2464,7 @@ static int cmd_bind(unsigned vid, unsigned pid)
     int r, changed = 0, storage;
     const char *how = "";
 
+    log_results = 1;
     j_open(&j);
     j_s(&j, "op", "bind");
     j_id(&j, vid, pid);
@@ -2235,7 +2473,7 @@ static int cmd_bind(unsigned vid, unsigned pid)
         j_s(&j, "error", "needs administrator: run elevated");
         return finish(&j, EXIT_NOTADMIN);
     }
-    r = find_target(vid, pid, &dev, &j);
+    r = find_target(vid, pid, &dev, &j, 1);
     if (r) {
         return r;
     }
@@ -2262,7 +2500,8 @@ static int cmd_bind(unsigned vid, unsigned pid)
         if (!restart(dev.dn)) {
             DWORD err = 0;
             /* Enumerate it afresh on its own driver */
-            if (!remove_dev(dev.inst, NULL, NULL, &reboot, &err) || reboot ||
+            if (!remove_dev(dev.inst, NULL, NULL, &reboot, &err, -1) ||
+                reboot ||
                 !wait_back(dev.inst, vid, pid, &after, now, 30, WANT_ANY)) {
                 j_b(&j, "reboot", reboot);
                 return fail(&j, "device stopped and did not start again: "
@@ -2376,7 +2615,8 @@ static int wait_back(const wchar_t *inst, unsigned vid, unsigned pid,
             now[MAX_DEVICE_ID_LEN - 1] = 0;
             if (get_info(now, in) && in->started && in->service[0] &&
                 (want == WANT_ANY ||
-                 (want == WANT_WINUSB) == (is_winusb(in->service) != 0))) {
+                 (want == WANT_WINUSB && is_winusb(in->service)) ||
+                 (want == WANT_WINDOWS && !is_userdrv(in)))) {
                 free(v);
                 return 1;
             }
@@ -2396,7 +2636,10 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     int n, i, hits = 0, r, absent, ours;
     BOOL reboot = FALSE;
     DWORD err = 0;
+    long sweep;
+    wchar_t name[64];
 
+    log_results = 1;
     j_open(&j);
     j_s(&j, "op", "unbind");
     j_id(&j, vid, pid);
@@ -2420,6 +2663,7 @@ static int cmd_unbind(unsigned vid, unsigned pid)
 
     if (hits == 0) {
         absent = remove_absent(vid, pid, &j, &reboot);
+        absent += sweep_packages(vid, pid, &j);
         if (absent) {
             rescan(0);
             j_b(&j, "present", 0);
@@ -2428,13 +2672,15 @@ static int cmd_unbind(unsigned vid, unsigned pid)
         return fail(&j, "no such device present", 0);
     }
 
-    r = find_target(vid, pid, &dev, &j);
+    /* Giving back is always allowed */
+    r = find_target(vid, pid, &dev, &j, 0);
     if (r) {
         return r;
     }
     get_info(dev.inst, &before);
     j_w(&j, "service_before", before.service);
-    if (!is_winusb(before.service)) {
+    j_w(&j, "provider_before", before.provider);
+    if (!is_userdrv(&before)) {
         j_b(&j, "ok", 0);
         j_s(&j, "refuse", "not on WinUSB");
         return finish(&j, EXIT_REFUSED);
@@ -2446,20 +2692,44 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     }
     remove_absent(vid, pid, &j, &reboot);
     ours = !_wcsicmp(before.provider, PROVIDER);
-    if (!remove_dev(dev.inst, ours ? before.inf : NULL, &j, &reboot, &err)) {
+    sweep = (long)(vid << 16 | pid);
+    if (!remove_dev(dev.inst, ours ? before.inf : NULL, &j, &reboot, &err,
+                    sweep)) {
         restart(dev.dn);
         j_b(&j, "reboot", reboot);
         return fail(&j, "cannot remove device", err);
     }
-    if (ours) {
-        wchar_t name[64];
-        cert_name(name, 64, vid, pid);
-        cert_remove(name, &j, "certs_removed");
-    }
+    cert_name(name, 64, vid, pid);
+    cert_remove(name, &j, "certs_removed");
     if (reboot) {
         return done(&j, reboot);
     }
     if (!wait_back(dev.inst, vid, pid, &after, now, 30, WANT_WINDOWS)) {
+        /* Still on WinUSB, libusbK, libusb0 or an own package: once more */
+        if (now[0] && after.present && is_userdrv(&after)) {
+            J p2;
+            char *s2;
+            int back;
+            wchar_t inst2[MAX_DEVICE_ID_LEN];
+
+            wcscpy(inst2, now);
+            j_open(&p2);
+            j_w(&p2, "service_found", after.service);
+            j_w(&p2, "provider_found", after.provider);
+            j_w(&p2, "inf_found", after.inf);
+            snote("unbind", "second pass");
+            back = remove_dev(inst2, NULL, &p2, &reboot, &err, sweep) &&
+                   !reboot &&
+                   wait_back(inst2, vid, pid, &after, now, 30, WANT_WINDOWS);
+            s2 = j_take(&p2);
+            j_raw(&j, "second_pass", s2);
+            free(s2);
+            if (back || reboot) {
+                j_w(&j, "instance_after", now);
+                j_info(&j, &after);
+                return done(&j, reboot);
+            }
+        }
         if (now[0]) {
             j_w(&j, "instance_after", now);
             j_info(&j, &after);
@@ -2483,6 +2753,7 @@ static int cmd_cleanup_cert(void)
     Buf bound = { 0 };
     int n, i, nb = 0;
 
+    log_results = 1;
     j_open(&j);
     j_s(&j, "op", "cleanup-cert");
     if (!is_elevated()) {
@@ -2516,6 +2787,42 @@ static int cmd_cleanup_cert(void)
     return finish(&j, EXIT_DONE);
 }
 
+/* ---- log ---------------------------------------------------------------- */
+
+static int print_file(const wchar_t *path)
+{
+    HANDLE f = CreateFileW(path, GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    char buf[4096];
+    DWORD got;
+
+    if (f == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    while (ReadFile(f, buf, sizeof buf, &got, NULL) && got) {
+        fwrite(buf, 1, got, stdout);
+    }
+    CloseHandle(f);
+    return 1;
+}
+
+/* The results of earlier bind, unbind and cleanup-cert runs, oldest first */
+static int cmd_log(void)
+{
+    wchar_t path[MAX_PATH], old[MAX_PATH];
+
+    if (!log_path(path, MAX_PATH, 0)) {
+        return EXIT_FAILED;
+    }
+    wcscpy(old, path);
+    wcscpy(old + wcslen(old) - 6, L".1.jsonl");
+    print_file(old);
+    print_file(path);
+    fflush(stdout);
+    return EXIT_DONE;
+}
+
 /* ---- main -------------------------------------------------------------- */
 
 static int usage(void)
@@ -2523,7 +2830,8 @@ static int usage(void)
     fputs("usage: winusb-switch list [--out FILE]\n"
           "       winusb-switch bind VVVV:PPPP [--out FILE]\n"
           "       winusb-switch unbind VVVV:PPPP [--out FILE]\n"
-          "       winusb-switch cleanup-cert [--out FILE]\n", stderr);
+          "       winusb-switch cleanup-cert [--out FILE]\n"
+          "       winusb-switch log\n", stderr);
     return EXIT_USAGE;
 }
 
@@ -2536,6 +2844,9 @@ static int run(int argc, wchar_t **argv)
     }
     if (argc == 2 && !wcscmp(argv[1], L"cleanup-cert")) {
         return cmd_cleanup_cert();
+    }
+    if (argc == 2 && !wcscmp(argv[1], L"log")) {
+        return cmd_log();
     }
     if (argc != 3 || !parse_id(argv[2], &vid, &pid)) {
         return usage();
