@@ -56,6 +56,12 @@ MACDATA = dev(0x174c, 0x55aa, "ASM105X", 3, 0x240000, [
         media("IOMedia", "disk4", True, [media("IOMedia", "disk4s1", False),
                                          media("IOMedia", "disk4s2", False)])]}])
 HUB = dev(0x1d5c, 0x5011, "USB2.0 Hub", 2, 0x100000, [DVD], cls=9)
+LED = dev(0x048d, 0x5702, "ITE Device", 1, 0x2300000, [
+    {"IOObjectClass": "IOUSBHostInterface", "bInterfaceClass": 3, "bInterfaceProtocol": 0}])
+HEADSET = dev(0x046d, 0x0a37, "Logitech USB Headset H540", 1, 0x2400000, [
+    {"IOObjectClass": "IOUSBHostInterface", "bInterfaceClass": 1},
+    {"IOObjectClass": "IOUSBHostInterface", "bInterfaceClass": 1},
+    {"IOObjectClass": "IOUSBHostInterface", "bInterfaceClass": 3, "bInterfaceProtocol": 0}])
 MOUNT = """\
 /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
 /dev/disk4s2 on /Volumes/Data (hfs, local, nodev, nosuid, journaled, noowners)
@@ -71,6 +77,18 @@ def judged(tree=None, mounts=MOUNT):
 
 
 class Finding(unittest.TestCase):
+    def test_hid_only_refused_headset_kept(self):
+        devs = {d.id: d for d in judged([LED, HEADSET, CAMERA])}
+        self.assertEqual(devs["048d:5702"].reason, usbhost.HID_ONLY)
+        self.assertEqual(devs["046d:0a37"].reason, "")
+        self.assertEqual(devs["046d:0a37"].iface_classes, (1, 1, 3))
+        self.assertTrue(devs["046d:0990"].passable)
+
+    def test_hidden_note(self):
+        self.assertEqual(usbhost.hidden_note(0), "")
+        self.assertTrue(usbhost.hidden_note(1).startswith("1 device hidden (keyboards"))
+        self.assertTrue(usbhost.hidden_note(3).startswith("3 devices hidden"))
+
     def test_devices_and_reasons(self):
         devs = {d.id: d for d in judged()}
         self.assertEqual(list(devs), ["05ac:0202", "046d:c03d", "0e8d:1887", "046d:0990",
@@ -235,15 +253,11 @@ class EditorTab(unittest.TestCase):
     def text(self, ed, dev_id):
         return ed.usb_host_boxes[dev_id].cget("text")
 
-    def test_lists_devices_with_reasons(self):
+    def test_refused_devices_are_hidden_and_counted(self):
         ed = self.editor(Machine(name="t"))
-        self.assertEqual(list(ed.usb_host_vars), ["05ac:0202", "046d:c03d", "0e8d:1887",
-                                                  "046d:0990", "174c:55aa"])
+        self.assertEqual(list(ed.usb_host_vars), ["0e8d:1887", "046d:0990"])
         self.assertIn("USB device 046d:0990  (046d:0990, high speed)", self.text(ed, "046d:0990"))
-        self.assertIn("keyboard or mouse", self.text(ed, "05ac:0202"))
-        self.assertIn("mounted disk", self.text(ed, "174c:55aa"))
-        for refused in ("05ac:0202", "046d:c03d", "174c:55aa"):
-            self.assertIn("disabled", ed.usb_host_boxes[refused].state())
+        self.assertTrue(ed.usb_hidden_label.cget("text").startswith("3 devices hidden ("))
         self.assertNotIn("disabled", ed.usb_host_boxes["0e8d:1887"].state())
 
     def test_ticking_saves_id_name_and_speed(self):
@@ -269,7 +283,7 @@ class EditorTab(unittest.TestCase):
                                                 UsbHostDevice("174c:55aa", "External Disk", "super")])
         ed = self.editor(m)
         self.assertTrue(self.text(ed, "046d:0990").startswith("QuickCam  (046d:0990"))
-        self.assertFalse(ed.usb_host_vars["174c:55aa"].get())
+        self.assertNotIn("174c:55aa", ed.usb_host_vars)
         self.assertEqual(ed.collect().usb_host_devices,
                          [UsbHostDevice("046d:0990", "QuickCam", "high")])
 

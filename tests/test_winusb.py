@@ -212,23 +212,32 @@ class WindowsEditorTab(unittest.TestCase):
     def text(self, ed, dev_id):
         return ed.usb_host_boxes[dev_id].cget("text")
 
-    def test_rows_state_speed_and_refusals(self):
+    def test_rows_state_speed_and_hidden_refusals(self):
         ed = self.editor(Machine(name="t"))
-        self.assertEqual(list(ed.usb_host_vars), ["046d:0990", "0e8d:1887", "046d:c52b"])
+        self.assertEqual(list(ed.usb_host_vars), ["046d:0990", "0e8d:1887"])
+        self.assertTrue(ed.usb_hidden_label.cget("text").startswith("1 device hidden ("))
         self.assertEqual(self.text(ed, "046d:0990"),
                          "Camera  (046d:0990, high speed) -- Windows driver (usbccgp)")
         self.assertEqual(self.text(ed, "0e8d:1887"),
                          "MT1887  (0e8d:1887, high speed) -- WinUSB (ready for QEMU)")
-        self.assertIn("keyboard or mouse", self.text(ed, "046d:c52b"))
-        self.assertIn("disabled", ed.usb_host_boxes["046d:c52b"].state())
         give, back = ed.usb_host_buttons["046d:0990"]
         self.assertNotIn("disabled", give.state())
         self.assertIn("disabled", back.state())
         give, back = ed.usb_host_buttons["0e8d:1887"]
         self.assertIn("disabled", give.state())
         self.assertNotIn("disabled", back.state())
-        for b in ed.usb_host_buttons["046d:c52b"]:
-            self.assertIn("disabled", b.state())
+
+    def test_refused_but_on_winusb_can_go_back(self):
+        self.listing = LIST + ('{"id":"048d:5702","instance":"USB\\\\VID_048D&PID_5702\\\\1",'
+                               '"product":"ITE Device","speed":"full","service":"WinUSB",'
+                               '"winusb":true,"refuse":"HID only"}\n')
+        ed = self.editor(Machine(name="t"))
+        self.assertIn("048d:5702", ed.usb_host_vars)
+        self.assertIn("HID only", self.text(ed, "048d:5702"))
+        self.assertIn("disabled", ed.usb_host_boxes["048d:5702"].state())
+        give, back = ed.usb_host_buttons["048d:5702"]
+        self.assertIn("disabled", give.state())
+        self.assertNotIn("disabled", back.state())
 
     def test_ticking_is_free_and_notes_the_driver(self):
         ed = self.editor(Machine(name="t"))

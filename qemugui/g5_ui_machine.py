@@ -470,10 +470,17 @@ class MachineEditor(tk.Toplevel):
         self.usb_host_vars = {}
         self.usb_host_info = {}
         self.usb_host_boxes = {}
-        rows = list(plugged) + [i for i in picked if i not in plugged]
+        hidden = [i for i, d in plugged.items() if not d.passable]
+        rows = [i for i in plugged if i not in hidden] + \
+               [i for i in picked if i not in plugged]
         if not rows:
             ttk.Label(self.usb_host_list, text="No USB device is plugged in.",
                       foreground=GREY).grid(row=0, column=0, sticky="w")
+        self.usb_hidden_label = ttk.Label(self.usb_host_list,
+                                          text=usbhost.hidden_note(len(hidden)),
+                                          foreground=GREY)
+        self.usb_hidden_label.grid(row=len(rows) + 1, column=0, sticky="w",
+                                   pady=(6, 0))
         for r, dev_id in enumerate(rows):
             d = plugged.get(dev_id)
             if d is not None:
@@ -540,7 +547,14 @@ class MachineEditor(tk.Toplevel):
         self.usb_host_boxes = {}
         self.usb_host_notes = {}
         self.usb_host_buttons = {}
-        rows = list(plugged) + [i for i in picked if i not in plugged]
+        # Refused devices stay out, unless one is on WinUSB and can go back
+        hidden = [i for i, d in plugged.items() if d.refuse and not d.winusb]
+        rows = [i for i in plugged if i not in hidden] + \
+               [i for i in picked if i not in plugged]
+        self.usb_hidden_label = ttk.Label(lst, text=usbhost.hidden_note(len(hidden)),
+                                          foreground=GREY)
+        self.usb_hidden_label.grid(row=2 * len(rows) + 2, column=0, columnspan=3,
+                                   sticky="w", pady=(6, 0))
         if problem:
             ttk.Label(lst, text=problem, foreground=GREY).grid(row=0, column=0, columnspan=3,
                                                                sticky="w")
@@ -577,7 +591,7 @@ class MachineEditor(tk.Toplevel):
                 box.state(["disabled"])
             if refused or d is None or d.winusb:
                 give.state(["disabled"])
-            if refused or d is None or not d.winusb:
+            if d is None or not d.winusb:      # a refused one may still go back
                 back.state(["disabled"])
             self.usb_host_vars[dev_id] = var
             self.usb_host_info[dev_id] = info

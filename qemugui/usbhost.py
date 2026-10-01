@@ -3,9 +3,10 @@ may never be passed through, and the QEMU options.
 
 No Tk in here, no privileges needed. QEMU takes a device from macOS only
 when it runs as root, and as root it can take anything, so the list itself
-refuses what must stay with the host: keyboards and mice, and devices
-holding a mounted volume that is not optical media (a DVD drive with a
-mounted disc may go; a disk with mounted volumes may not).
+refuses what must stay with the host: keyboards and mice, devices holding a
+mounted volume that is not optical media (a DVD drive with a mounted disc
+may go; a disk with mounted volumes may not), and devices made only of HID
+interfaces (LED controllers, macro pads; a headset's HID button stays).
 """
 
 from __future__ import annotations
@@ -26,6 +27,15 @@ SPEEDS = {0: "low", 1: "full", 2: "high", 3: "super", 4: "super"}
 
 KEYBOARD_OR_MOUSE = "keyboard or mouse"
 MOUNTED_DISK = "mounted disk"
+HID_ONLY = "HID only"
+HIDDEN_KINDS = "keyboards, mice, hubs, disks, Bluetooth, HID-only devices"
+
+
+def hidden_note(n: int) -> str:
+    """The one line standing in for the devices a tab leaves out."""
+    if n <= 0:
+        return ""
+    return f"{n} device{'s' if n != 1 else ''} hidden ({HIDDEN_KINDS})"
 
 OPTICAL_CLASSES = {"IOCDMedia", "IODVDMedia", "IOBDMedia"}
 # Generic Desktop pointer, mouse, keyboard, keypad
@@ -51,6 +61,7 @@ class HostDevice:
     location: int = 0
     hid_input: bool = False
     media: tuple = ()         # ((bsd name, optical), ...)
+    iface_classes: tuple = ()  # bInterfaceClass of each interface
 
     @property
     def label(self) -> str:
@@ -103,6 +114,9 @@ def parse_ioreg(data: bytes) -> list[HostDevice]:
                 order.append(dev.location)
             optical = False
         elif dev is not None:
+            if node.get("IOObjectClass") == "IOUSBHostInterface" and \
+                    isinstance(node.get("bInterfaceClass"), int):
+                dev.iface_classes += (node["bInterfaceClass"],)
             if _hid_input(node):
                 dev.hid_input = True
             if node.get("IOObjectClass") in OPTICAL_CLASSES:
@@ -135,6 +149,8 @@ def judge(devices: list[HostDevice], mounts: dict[str, str]) -> list[HostDevice]
             d.reason = KEYBOARD_OR_MOUSE
         elif any(not optical and bsd in mounts for bsd, optical in d.media):
             d.reason = MOUNTED_DISK
+        elif d.iface_classes and all(c == 3 for c in d.iface_classes):
+            d.reason = HID_ONLY
         else:
             d.reason = ""
     return devices
