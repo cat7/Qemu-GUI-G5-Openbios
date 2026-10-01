@@ -22,6 +22,7 @@ from qemugui import g5_model as model  # noqa: E402
 from qemugui.g5_model import Machine, UsbHostDevice  # noqa: E402
 
 LIST = r'''
+{"op":"list","warnings":[]}
 {"id":"046d:0990","instance":"USB\\VID_046D&PID_0990\\8C5C6B32","description":"USB Composite Device","product":"Camera","speed":"high","class":"USB","class_guid":"{36fc9e60-c465-11cf-8056-444553540000}","service":"usbccgp","inf":"usb.inf","driver":"USB Composite Device","composite":true,"winusb":false,"problem":0,"functions":[{"class":"Camera","service":"usbvideo"},{"class":"MEDIA","service":"usbaudio"}],"refuse":""}
 {"id":"0e8d:1887","instance":"USB\\VID_0E8D&PID_1887\\5&1A2B3C&0&3","description":"WinUsb Device","product":"MT1887","speed":"high","class":"USBDevice","class_guid":"{88bae032-5a81-49f0-bc3d-a4ff138216d6}","service":"WinUSB","inf":"oem42.inf","driver":"USB device 0e8d:1887 for QEMU (WinUSB)","provider":"winusb-switch","composite":false,"winusb":true,"problem":0,"functions":[],"refuse":""}
 
@@ -50,6 +51,20 @@ class ListFormat(unittest.TestCase):
         self.assertEqual(cam.provider, "")
         self.assertFalse(rx.switchable)
         self.assertEqual(rx.refuse, "keyboard or mouse")
+
+    def test_warnings(self):
+        devs = wl.parse_list(LIST)
+        self.assertEqual(devs.warnings, [])
+        self.assertEqual(wl.warnings_text(devs), "")
+        text = LIST.replace('"warnings":[]', '"warnings":["UsbDk filter installed (from '
+                            'virt-viewer?) - devices may not return to their Windows '
+                            'drivers","046d:0a37: driver package oem12.inf installs '
+                            'libusbK"]')
+        devs = wl.parse_list(text)
+        self.assertEqual(len(devs), 3)
+        self.assertEqual(len(devs.warnings), 2)
+        self.assertTrue(wl.warnings_text(devs).startswith("UsbDk filter installed"))
+        self.assertEqual(wl.warnings_text([]), "")
 
     def test_bad_lines(self):
         with self.assertRaises(ValueError):
@@ -322,6 +337,16 @@ class WindowsEditorTab(unittest.TestCase):
         ed._usb_switch("bind", "046d:0990", wait=True)
         self.assertIn("cancelled", ed.usb_status.cget("text"))
         self.assertFalse(ed.usb_busy)
+
+    def test_warnings_line(self):
+        self.listing = LIST.replace('"warnings":[]',
+                                    '"warnings":["UsbDk filter installed (from virt-viewer?)'
+                                    ' - devices may not return to their Windows drivers"]')
+        ed = self.editor(Machine(name="t"))
+        self.assertTrue(ed.usb_warning_label.cget("text").startswith("UsbDk filter installed"))
+        self.listing = LIST
+        ed2 = self.editor(Machine(name="t"))
+        self.assertEqual(ed2.usb_warning_label.cget("text"), "")
 
     def test_helper_missing_is_said(self):
         wl.list_devices = lambda folder=None: ([], wl.missing_message())

@@ -71,6 +71,17 @@ class WinDevice:
         return f"{WINDOWS_STATE} ({self.service})" if self.service else WINDOWS_STATE
 
 
+class DeviceList(list):
+    """Devices from `list`, with its warnings: third-party filters or
+    drivers (UsbDk, libusbK, libusb0) that can take devices away."""
+    warnings: list = []
+
+
+def warnings_text(devices) -> str:
+    """The list's warnings in one line, "" if none."""
+    return "; ".join(str(w) for w in getattr(devices, "warnings", []) or [])
+
+
 def _obj(line: str) -> dict:
     o = json.loads(line)
     if not isinstance(o, dict):
@@ -79,8 +90,10 @@ def _obj(line: str) -> dict:
 
 
 def parse_list(text: str) -> list[WinDevice]:
-    """`winusb-switch list` output -> devices. ValueError on a bad line."""
-    out = []
+    """`winusb-switch list` output -> devices (with .warnings). ValueError
+    on a bad line."""
+    out = DeviceList()
+    out.warnings = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -88,6 +101,9 @@ def parse_list(text: str) -> list[WinDevice]:
         o = _obj(line)
         if o.get("ok") is False:
             raise ValueError(o.get("error") or "list failed")
+        if "id" not in o and isinstance(o.get("warnings"), list):
+            out.warnings += [str(w) for w in o["warnings"]]
+            continue
         dev_id = str(o.get("id", "")).lower()
         if not ID_RE.match(dev_id) or not o.get("instance"):
             raise ValueError(f"bad device line: {line!r}")

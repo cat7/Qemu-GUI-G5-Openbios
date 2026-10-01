@@ -555,6 +555,12 @@ class MachineEditor(tk.Toplevel):
                                           foreground=GREY)
         self.usb_hidden_label.grid(row=2 * len(rows) + 2, column=0, columnspan=3,
                                    sticky="w", pady=(6, 0))
+        # UsbDk, libusbK, libusb0: may keep devices from their Windows drivers
+        self.usb_warning_label = ttk.Label(lst, text=winusb.warnings_text(devices),
+                                           foreground="red", wraplength=EDITOR_WIDTH - 60,
+                                           justify="left")
+        self.usb_warning_label.grid(row=2 * len(rows) + 3, column=0, columnspan=3,
+                                    sticky="w")
         if problem:
             ttk.Label(lst, text=problem, foreground=GREY).grid(row=0, column=0, columnspan=3,
                                                                sticky="w")

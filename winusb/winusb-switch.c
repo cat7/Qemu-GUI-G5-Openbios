@@ -930,6 +930,8 @@ static const char *check(DEVINST dn, char **funcs)
 
 /* ---- list -------------------------------------------------------------- */
 
+static char *hijack_warnings(const Dev *devs, int n);
+
 static int cmd_list(void)
 {
     Dev *v;
@@ -945,6 +947,15 @@ static int cmd_list(void)
         j_err(&j, "detail", e);
         j_print(&j);
         return EXIT_FAILED;
+    }
+    {
+        J j;
+        char *w = hijack_warnings(v, n);
+        j_open(&j);
+        j_s(&j, "op", "list");
+        j_raw(&j, "warnings", w);
+        j_print(&j);
+        free(w);
     }
     for (i = 0; i < n; i++) {
         J j;
@@ -1420,6 +1431,163 @@ static int sweep_packages(unsigned vid, unsigned pid, J *j)
     free(mine.p);
     free(foreign.p);
     return nmine;
+}
+
+/* ---- third-party USB filters and drivers that take devices ------------- */
+
+#define USBDK_NOTE " (from virt-viewer?) - devices may not return to their " \
+                   "Windows drivers"
+
+static void warn(Buf *w, int *nw, const char *msg)
+{
+    b_str(w, (*nw)++ ? "," : "");
+    b_jstr(w, msg);
+}
+
+/* Each filter in a multi-sz; UsbDk once, with what it does */
+static void warn_filters(const char *where, const wchar_t *msz, Buf *w,
+                         int *nw, int *usbdk)
+{
+    const wchar_t *f;
+    char msg[256];
+
+    for (f = msz; f && *f; f += wcslen(f) + 1) {
+        char *name = utf8(f);
+        if (!_wcsicmp(f, L"UsbDk")) {
+            if (!*usbdk) {
+                snprintf(msg, sizeof msg, "UsbDk filter installed%s",
+                         USBDK_NOTE);
+                warn(w, nw, msg);
+            }
+            *usbdk = 1;
+        } else {
+            snprintf(msg, sizeof msg, "%s filter %s installed", where, name);
+            warn(w, nw, msg);
+        }
+        free(name);
+    }
+}
+
+/* A REG_MULTI_SZ value under HKLM, double-NUL terminated; free() */
+static wchar_t *reg_msz(const wchar_t *key, const wchar_t *value)
+{
+    DWORD size = 0;
+    wchar_t *buf;
+
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_MULTI_SZ,
+                     NULL, NULL, &size) != ERROR_SUCCESS || size == 0) {
+        return NULL;
+    }
+    buf = calloc(size + 2 * sizeof(wchar_t), 1);
+    if (!buf) {
+        oom();
+    }
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_MULTI_SZ,
+                     NULL, buf, &size) != ERROR_SUCCESS) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+/*
+ * What can take USB devices away from their Windows drivers: filters on
+ * the USB class or on these devices, the UsbDk service, and libusbK,
+ * libusb0 or UsbDk packages naming one of them. As a JSON array; free().
+ */
+static char *hijack_warnings(const Dev *devs, int n)
+{
+    static const wchar_t *cls_key =
+        L"SYSTEM\\CurrentControlSet\\Control\\Class\\"
+        L"{36FC9E60-C465-11CF-8056-444553540000}";
+    static const wchar_t *drivers[] = { L"libusbK", L"libusb0", L"UsbDk" };
+    Buf w = { 0 };
+    int nw = 0, usbdk = 0, i;
+    wchar_t *f, dir[MAX_PATH], pattern[MAX_PATH], path[MAX_PATH];
+    HKEY k;
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+    UINT wl;
+    char msg[256];
+
+    if (!devs) {
+        n = 0;
+    }
+    b_str(&w, "[");
+    f = reg_msz(cls_key, L"UpperFilters");
+    warn_filters("USB class upper", f, &w, &nw, &usbdk);
+    free(f);
+    f = reg_msz(cls_key, L"LowerFilters");
+    warn_filters("USB class lower", f, &w, &nw, &usbdk);
+    free(f);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"SYSTEM\\CurrentControlSet\\Services\\UsbDk", 0,
+                      KEY_READ, &k) == ERROR_SUCCESS) {
+        RegCloseKey(k);
+        if (!usbdk) {
+            snprintf(msg, sizeof msg, "UsbDk driver installed%s", USBDK_NOTE);
+            warn(&w, &nw, msg);
+            usbdk = 1;
+        }
+    }
+    for (i = 0; i < n; i++) {
+        char where[48];
+        snprintf(where, sizeof where, "%04x:%04x upper", devs[i].vid,
+                 devs[i].pid);
+        f = cm_prop(devs[i].dn, CM_DRP_UPPERFILTERS);
+        warn_filters(where, f, &w, &nw, &usbdk);
+        free(f);
+        snprintf(where, sizeof where, "%04x:%04x lower", devs[i].vid,
+                 devs[i].pid);
+        f = cm_prop(devs[i].dn, CM_DRP_LOWERFILTERS);
+        warn_filters(where, f, &w, &nw, &usbdk);
+        free(f);
+    }
+
+    wl = GetWindowsDirectoryW(dir, MAX_PATH - 40);
+    if (wl && wl < MAX_PATH - 40 && n > 0) {
+        wcscat(dir, L"\\INF");
+        swprintf(pattern, MAX_PATH, L"%ls\\oem*.inf", dir);
+        find = FindFirstFileW(pattern, &fd);
+        if (find != INVALID_HANDLE_VALUE) {
+            do {
+                wchar_t *text;
+                const wchar_t *drv = NULL;
+                size_t d;
+
+                swprintf(path, MAX_PATH, L"%ls\\%ls", dir, fd.cFileName);
+                text = read_inf_text(path);
+                for (d = 0; text && !drv && d < 3; d++) {
+                    if (wcsistr(text, drivers[d])) {
+                        drv = drivers[d];
+                    }
+                }
+                for (i = 0; drv && i < n; i++) {
+                    wchar_t id[32];
+                    int seen = 0, k2;
+                    for (k2 = 0; k2 < i; k2++) {
+                        seen |= devs[k2].vid == devs[i].vid &&
+                                devs[k2].pid == devs[i].pid;
+                    }
+                    swprintf(id, 32, L"VID_%04X&PID_%04X", devs[i].vid,
+                             devs[i].pid);
+                    if (!seen && wcsistr(text, id)) {
+                        char *nm = utf8(fd.cFileName), *dn = utf8(drv);
+                        snprintf(msg, sizeof msg,
+                                 "%04x:%04x: driver package %s installs %s",
+                                 devs[i].vid, devs[i].pid, nm, dn);
+                        warn(&w, &nw, msg);
+                        free(nm);
+                        free(dn);
+                    }
+                }
+                free(text);
+            } while (FindNextFileW(find, &fd));
+            FindClose(find);
+        }
+    }
+    b_str(&w, "]");
+    return w.p;
 }
 
 /*
@@ -2477,6 +2645,11 @@ static int cmd_bind(unsigned vid, unsigned pid)
     if (r) {
         return r;
     }
+    {
+        char *w = hijack_warnings(&dev, 1);
+        j_raw(&j, "warnings", w);
+        free(w);
+    }
     get_info(dev.inst, &before);
     j_w(&j, "service_before", before.service);
     j_w(&j, "inf_before", before.inf);
@@ -2676,6 +2849,11 @@ static int cmd_unbind(unsigned vid, unsigned pid)
     r = find_target(vid, pid, &dev, &j, 0);
     if (r) {
         return r;
+    }
+    {
+        char *w = hijack_warnings(&dev, 1);
+        j_raw(&j, "warnings", w);
+        free(w);
     }
     get_info(dev.inst, &before);
     j_w(&j, "service_before", before.service);
