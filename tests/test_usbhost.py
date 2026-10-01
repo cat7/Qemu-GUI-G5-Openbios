@@ -199,18 +199,35 @@ class Launcher(unittest.TestCase):
         self.assertFalse(command.needs_sudo(m, "darwin"))
         self.assertNotIn("usb-host", " ".join(command.build_argv(m, QD, MD, "darwin")))
 
-    def test_windows_unelevated_lines(self):
+    def test_windows_only_devices_qemu_owns(self):
         m = self.machine()
         self.assertFalse(command.needs_sudo(m, "win32"))
+        dvd = "usb-host,vendorid=0x0e8d,productid=0x1887,bus=usb-bus.2"
+        bt = "usb-host,vendorid=0x0a12,productid=0x0001,bus=usb-bus.1"
+        # nothing known about ownership: nothing passed through
         argv = command.build_argv(m, r"C:\q", r"C:\m", "win32")
-        i = argv.index("usb-host,vendorid=0x0e8d,productid=0x1887,bus=usb-bus.2")
-        self.assertEqual(argv[i - 1], "-device")
-        self.assertIn("usb-host,vendorid=0x0a12,productid=0x0001,bus=usb-bus.1", argv)
-        text = command.launcher_text(m, r"C:\q", r"C:\m", "win32")
-        self.assertIn('"usb-host,vendorid=0x0e8d,productid=0x1887,bus=usb-bus.2" ^', text)
-        self.assertIn('"usb-host,vendorid=0x0a12,productid=0x0001,bus=usb-bus.1" ^', text)
+        self.assertNotIn("usb-host", " ".join(argv))
+        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32", owned=set())
+        self.assertNotIn("usb-host", " ".join(argv))
+        # the DVD is on WinUSB, the other ticked device still Windows'
+        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32", owned={"0e8d:1887"})
+        self.assertEqual(argv[argv.index(dvd) - 1], "-device")
+        self.assertNotIn(bt, argv)
+        # owned but not ticked: not passed through
+        argv = command.build_argv(Machine(name="L"), r"C:\q", r"C:\m", "win32",
+                                  owned={"0e8d:1887"})
+        self.assertNotIn("usb-host", " ".join(argv))
+        text = command.launcher_text(m, r"C:\q", r"C:\m", "win32",
+                                     owned={"0e8d:1887", "0a12:0001"})
+        self.assertIn(f'"{dvd}" ^', text)
+        self.assertIn(f'"{bt}" ^', text)
         for word in ("sudo", "runas", "winusb-switch"):
             self.assertNotIn(word, text)
+
+    def test_mac_ignores_ownership(self):
+        m = self.machine()
+        self.assertEqual(command.build_argv(m, QD, MD, "darwin"),
+                         command.build_argv(m, QD, MD, "darwin", owned=set()))
 
     def test_linux_has_none(self):
         m = self.machine()

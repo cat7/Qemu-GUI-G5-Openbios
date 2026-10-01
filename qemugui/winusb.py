@@ -34,7 +34,7 @@ ID_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{4}$")
 
 WINUSB_STATE = "WinUSB (ready for QEMU)"
 WINDOWS_STATE = "Windows driver"
-NOT_READY_NOTE = "won't be passed through until given to QEMU"
+NOT_READY_NOTE = "not passed through: owned by Windows"
 
 
 @dataclass
@@ -149,6 +149,27 @@ def list_devices(folder: Path | str | None = None) -> tuple[list[WinDevice], str
         return parse_list(r.stdout.decode("utf-8", "replace")), ""
     except ValueError as e:
         return [], f"{HELPER} list failed: {e}"
+
+
+def owned_ids(folder: Path | str | None = None) -> tuple[set[str] | None, str]:
+    """Ids of the devices QEMU owns now (on WinUSB), or (None, why not)."""
+    devices, why = list_devices(folder)
+    if why:
+        return None, why
+    return {d.id for d in devices if d.winusb}, ""
+
+
+def passthrough_note(chosen: list[str], owned: set[str] | None, why: str) -> str:
+    """What the launcher leaves out of the ticked devices, and why; "" if none."""
+    if not chosen:
+        return ""
+    if owned is None:
+        return f"No USB device is passed through: {why}"
+    left = [i for i in chosen if i not in owned]
+    if not left:
+        return ""
+    return ("Not passed through, owned by Windows (Give to QEMU first): "
+            + ", ".join(left))
 
 
 def shell_execute_runas(exe: str, params: str) -> int | None:

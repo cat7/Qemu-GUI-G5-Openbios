@@ -83,6 +83,28 @@ class ListFormat(unittest.TestCase):
             wl.parse_result('{"op":"bind","ok":true}\n{"op":"bind","ok":true}')
 
 
+class Ownership(unittest.TestCase):
+    def test_note(self):
+        self.assertEqual(wl.passthrough_note([], None, "x"), "")
+        self.assertEqual(wl.passthrough_note(["046d:0990"], None, "no helper"),
+                         "No USB device is passed through: no helper")
+        self.assertEqual(wl.passthrough_note(["0e8d:1887"], {"0e8d:1887"}, ""), "")
+        self.assertIn("046d:0990", wl.passthrough_note(["046d:0990", "0e8d:1887"],
+                                                       {"0e8d:1887"}, ""))
+
+    def test_owned_ids(self):
+        saved = wl.list_devices
+        try:
+            wl.list_devices = lambda folder=None: (wl.parse_list(LIST), "")
+            self.assertEqual(wl.owned_ids(), ({"0e8d:1887"}, ""))
+            wl.list_devices = lambda folder=None: ([], wl.missing_message())
+            owned, why = wl.owned_ids()
+            self.assertIsNone(owned)
+            self.assertIn("not next to", why)
+        finally:
+            wl.list_devices = saved
+
+
 class Helper(unittest.TestCase):
     """winusb-switch.exe beside qemu-system-ppc64.exe: list unelevated, bind
     and unbind through the UAC prompt with the result in a file."""
@@ -239,16 +261,34 @@ class WindowsEditorTab(unittest.TestCase):
         self.assertIn("disabled", give.state())
         self.assertNotIn("disabled", back.state())
 
-    def test_ticking_is_free_and_notes_the_driver(self):
+    def test_tick_only_what_qemu_owns(self):
         ed = self.editor(Machine(name="t"))
-        ed.usb_host_vars["046d:0990"].set(True)
+        self.assertIn("disabled", ed.usb_host_boxes["046d:0990"].state())     # Windows'
+        self.assertNotIn("disabled", ed.usb_host_boxes["0e8d:1887"].state())  # on WinUSB
         ed.usb_host_vars["0e8d:1887"].set(True)
-        self.assertIn("won't be passed through until given to QEMU",
-                      ed.usb_host_notes["046d:0990"].cget("text"))
         self.assertEqual(ed.usb_host_notes["0e8d:1887"].cget("text"), "")
         self.assertEqual(ed.collect().usb_host_devices,
-                         [UsbHostDevice("046d:0990", "Camera", "high"),
-                          UsbHostDevice("0e8d:1887", "MT1887", "high")])
+                         [UsbHostDevice("0e8d:1887", "MT1887", "high")])
+
+    def test_saved_tick_kept_while_windows_owns_it(self):
+        ed = self.editor(Machine(name="t", usb_host_devices=[
+            UsbHostDevice("046d:0990", "Camera", "high")]))
+        self.assertTrue(ed.usb_host_vars["046d:0990"].get())
+        self.assertIn("disabled", ed.usb_host_boxes["046d:0990"].state())
+        self.assertIn("not passed through: owned by Windows",
+                      ed.usb_host_notes["046d:0990"].cget("text"))
+        give, _back = ed.usb_host_buttons["046d:0990"]
+        self.assertNotIn("disabled", give.state())
+        self.assertEqual(ed.collect().usb_host_devices,
+                         [UsbHostDevice("046d:0990", "Camera", "high")])
+
+    def test_switch_refreshes_the_main_window(self):
+        ed = self.editor(Machine(name="t"))
+        calls = []
+        ed.master.refresh_details = lambda: calls.append(1)
+        wl.run_elevated = lambda op, i, folder=None: {"op": op, "ok": True, "status": "done"}
+        ed._usb_switch("bind", "046d:0990", wait=True)
+        self.assertEqual(calls, [1])
 
     def test_give_to_qemu_refreshes_and_keeps_ticks(self):
         ed = self.editor(Machine(name="t", usb_host_devices=[
@@ -291,6 +331,72 @@ class WindowsEditorTab(unittest.TestCase):
                  if w.winfo_class() == "TLabel"]
         self.assertTrue(any("winusb-switch.exe is not next to" in t for t in texts), texts)
         self.assertTrue(ed.usb_host_vars["046d:0990"].get())
+
+
+@unittest.skipUnless(_tk_available(), "no display")
+class WindowsMainWindowCommandLine(unittest.TestCase):
+    """The preview and run.bat take a ticked device only while QEMU owns it,
+    asking winusb-switch each time."""
+
+    def setUp(self):
+        from qemugui import g5_ui_main as ui
+        self.ui = ui
+        self.td = tempfile.TemporaryDirectory()
+        self.saved = (paths.HOST_PLATFORM, wl.list_devices)
+        paths.HOST_PLATFORM = "win32"
+        paths.use_install_dir(self.td.name)
+        self.listing = (wl.parse_list(LIST), "")
+        wl.list_devices = lambda folder=None: self.listing
+        self.windows = []
+
+    def tearDown(self):
+        paths.HOST_PLATFORM, wl.list_devices = self.saved
+        for w in self.windows:
+            w.destroy()
+        paths.use_install_dir(None)
+        self.td.cleanup()
+
+    def window(self):
+        lib = model.Library(Path(self.td.name) / "Machines")
+        lib.save(Machine(name="L", usb_host_devices=[
+            UsbHostDevice("046d:0990", "Camera", "high"),
+            UsbHostDevice("0e8d:1887", "MT1887", "high")]))
+        w = self.ui.MainWindow(paths.Settings(last_machine="L"),
+                               settings_path=Path(self.td.name) / "settings.json")
+        w.withdraw()
+        self.windows.append(w)
+        w.refresh_list(select="L")
+        return w
+
+    def preview(self, w):
+        return w.command_line.get("1.0", "end")
+
+    def test_only_owned_ticked_devices(self):
+        w = self.window()
+        text = self.preview(w)
+        self.assertIn("vendorid=0x0e8d,productid=0x1887", text)
+        self.assertNotIn("vendorid=0x046d,productid=0x0990", text)
+        self.assertIn("owned by Windows (Give to QEMU first): 046d:0990", text)
+
+    def test_missing_helper_passes_nothing(self):
+        self.listing = ([], wl.missing_message())
+        w = self.window()
+        text = self.preview(w)
+        self.assertNotIn("usb-host", text)
+        self.assertIn("No USB device is passed through: winusb-switch.exe is not next to",
+                      text)
+
+    def test_run_bat_follows_ownership(self):
+        w = self.window()
+        m = w.library.load("L")
+        w._write_launcher(m)
+        bat = (w.library.folder("L") / "run.bat").read_text(encoding="utf-8")
+        self.assertIn("vendorid=0x0e8d,productid=0x1887", bat)
+        self.assertNotIn("vendorid=0x046d", bat)
+        self.listing = (wl.parse_list(LIST.replace('"winusb":false', '"winusb":true', 1)), "")
+        w._write_launcher(m)
+        bat = (w.library.folder("L") / "run.bat").read_text(encoding="utf-8")
+        self.assertIn("vendorid=0x046d,productid=0x0990", bat)
 
 
 if __name__ == "__main__":

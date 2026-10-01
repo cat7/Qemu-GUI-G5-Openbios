@@ -576,6 +576,7 @@ class MachineEditor(tk.Toplevel):
                 text = (f"{info.name or 'USB device ' + dev_id}  ({dev_id}, "
                         f"{info.speed or '?'} speed) -- not connected")
             refused = d is not None and bool(d.refuse)
+            # A saved tick stays even while Windows owns the device
             var = tk.BooleanVar(value=dev_id in picked and not refused)
             box = ttk.Checkbutton(lst, text=text, variable=var)
             box.grid(row=r, column=0, sticky="w")
@@ -587,7 +588,8 @@ class MachineEditor(tk.Toplevel):
             back.grid(row=r, column=2, padx=2)
             note = ttk.Label(lst, text="", foreground=GREY)
             note.grid(row=r + 1, column=0, columnspan=3, sticky="w")
-            if refused:
+            # Only a device QEMU owns (on WinUSB) can be ticked
+            if refused or (d is not None and not d.winusb):
                 box.state(["disabled"])
             if refused or d is None or d.winusb:
                 give.state(["disabled"])
@@ -639,6 +641,10 @@ class MachineEditor(tk.Toplevel):
         self.usb_busy = False
         self._fill_usb_host_win(self._collect_usb_host())
         self.usb_status.config(text=winusb.outcome_text(res))
+        # The main window's command line follows the new ownership
+        refresh = getattr(self.master, "refresh_details", None)
+        if callable(refresh):
+            refresh()
 
     def _build_advanced(self):
         f = self._tab("Advanced")

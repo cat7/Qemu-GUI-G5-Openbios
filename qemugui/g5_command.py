@@ -91,8 +91,10 @@ def drive_tokens(m: Machine, machine_dir: str, platform: str) -> list[str]:
 
 
 def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
-               platform: str = paths.HOST_PLATFORM) -> list[str]:
-    """The complete argv, first token = absolute path of the QEMU binary."""
+               platform: str = paths.HOST_PLATFORM, owned=None) -> list[str]:
+    """The complete argv, first token = absolute path of the QEMU binary.
+    *owned*: on Windows, the ids of the devices QEMU owns now (on WinUSB);
+    only those of the ticked devices are passed through, none without it."""
     qd = qemu_dir
     argv: list[str] = [paths.join_path(qd, paths.qemu_binary_name(platform), platform)]
 
@@ -126,9 +128,11 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     argv += ["-nic", nic_option(m.network)]
     argv += drive_tokens(m, machine_dir, platform)
     argv += prom_env_tokens(m)
-    if platform == "darwin" or paths.is_windows(platform):
-        # Windows: no elevation; QEMU gets only devices on WinUSB
+    if platform == "darwin":
         argv += usbhost.qemu_tokens([(u.id, u.speed) for u in m.usb_host_devices])
+    elif paths.is_windows(platform) and owned:
+        argv += usbhost.qemu_tokens([(u.id, u.speed) for u in m.usb_host_devices
+                                     if u.id in owned])
     if m.rtc_base.strip():
         argv += ["-rtc", f"base={m.rtc_base.strip()}"]
     argv += extra
@@ -158,18 +162,18 @@ def render_launcher(argv: list[str], platform: str = paths.HOST_PLATFORM, sudo: 
 
 
 def launcher_text(m: Machine, qemu_dir: str, machine_dir: str,
-                  platform: str = paths.HOST_PLATFORM) -> str:
-    return render_launcher(build_argv(m, qemu_dir, machine_dir, platform), platform,
+                  platform: str = paths.HOST_PLATFORM, owned=None) -> str:
+    return render_launcher(build_argv(m, qemu_dir, machine_dir, platform, owned), platform,
                            needs_sudo(m, platform), extra_count(m, platform), m.name)
 
 
 def write_launcher(m: Machine, qemu_dir: str, machine_dir: str,
-                   platform: str = paths.HOST_PLATFORM):
+                   platform: str = paths.HOST_PLATFORM, owned=None):
     """Writes the launcher only; the NVRAM file is QEMU's to create."""
     from pathlib import Path
     import os
     import stat
-    argv = build_argv(m, qemu_dir, machine_dir, platform)
+    argv = build_argv(m, qemu_dir, machine_dir, platform, owned)
     text = render_launcher(argv, platform, needs_sudo(m, platform), extra_count(m, platform),
                            m.name)
     path = Path(machine_dir) / paths.launcher_name(platform)
