@@ -19,7 +19,7 @@ import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 
-APP_NAME = "Qemu-system-ppc64 G5 GUI"
+APP_NAME = "Qemu-system-ppc64 G5 Openbios GUI"
 QEMU_BINARY = "qemu-system-ppc64"
 HOST_PLATFORM = sys.platform  # "darwin" | "win32" | "linux"
 

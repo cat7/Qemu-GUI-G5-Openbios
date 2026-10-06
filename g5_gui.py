@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qemu-system-ppc64 G5 GUI: start an emulated Power Mac G5 (PowerMac7,3).
+"""Qemu-system-ppc64 G5 Openbios GUI: start an emulated Power Mac G5 (PowerMac7,3).
 
 Runs from the folder that holds qemu-system-ppc64; machines live in a
 "Machines" folder next to it. Standard library only (tkinter).

@@ -1,4 +1,4 @@
-"""Qemu-system-ppc64 G5 GUI: a portable launcher for the QEMU PowerMac7,3
+"""Qemu-system-ppc64 G5 Openbios GUI: a portable launcher for the QEMU PowerMac7,3
 (G5) machine.
 
 Standard library only. ``g5_command``, ``g5_model`` and ``paths``

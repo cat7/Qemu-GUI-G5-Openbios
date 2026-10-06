@@ -162,7 +162,7 @@ class Record(unittest.TestCase):
         self.assertTrue(any("only work on a Mac or on Windows" in w for w in warnings))
 
 
-QD = "/Applications/qemu-system-ppc64-G5"
+QD = "/Applications/qemu-system-ppc64-G5-openbios"
 MD = QD + "/Machines/Leopard"
 
 

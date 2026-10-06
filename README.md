@@ -1,4 +1,4 @@
-# Qemu-system-ppc64 G5 GUI
+# Qemu-system-ppc64 G5 Openbios GUI
 
 A portable launcher for the Power Mac G5 (PowerMac7,3) machine of
 `qemu-system-ppc64`, branch `powermac73` of github.com/cat7/qemu, with the
@@ -51,14 +51,14 @@ With the python.org framework Python (Homebrew's Python has no tkinter):
     /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
         -m PyInstaller --noconfirm G5GUI.spec
 
-Result: `dist/Qemu-system-ppc64 G5 GUI.app`, arm64. Set
+Result: `dist/Qemu-system-ppc64 G5 Openbios GUI.app`, arm64. Set
 `QEMUGUI_TARGET_ARCH=universal2` (or `x86_64`) for another architecture.
 
 ## Build on Windows
 
     py -m PyInstaller --noconfirm G5GUI.spec
 
-Result: a single windowed executable, `dist/Qemu-system-ppc64 G5 GUI.exe`.
+Result: a single windowed executable, `dist/Qemu-system-ppc64 G5 Openbios GUI.exe`.
 Put it alongside `qemu-system-ppc64.exe`.
 
 USB switch helper, from `winusb/` with a 64-bit mingw-w64 cross compiler:

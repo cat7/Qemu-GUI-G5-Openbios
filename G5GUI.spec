@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Qemu-system-ppc64 G5 GUI.
+# PyInstaller spec for Qemu-system-ppc64 G5 Openbios GUI.
 #
 # macOS, with the python.org framework Python (it has a working tkinter):
 #
@@ -9,15 +9,15 @@
 # The macOS bundle is arm64 unless QEMUGUI_TARGET_ARCH says otherwise
 # (x86_64 or universal2).
 #
-# Put the result ("dist/Qemu-system-ppc64 G5 GUI.app" on macOS, the single
-# "dist/Qemu-system-ppc64 G5 GUI.exe" on Windows) into the folder that holds
+# Put the result ("dist/Qemu-system-ppc64 G5 Openbios GUI.app" on macOS, the single
+# "dist/Qemu-system-ppc64 G5 Openbios GUI.exe" on Windows) into the folder that holds
 # qemu-system-ppc64, openbios-qemu.elf and pc-bios/. Machines/ is made
 # beside the application, never inside the bundle.
 
 import os
 import sys
 
-NAME = 'Qemu-system-ppc64 G5 GUI'
+NAME = 'Qemu-system-ppc64 G5 Openbios GUI'
 TARGET_ARCH = os.environ.get('QEMUGUI_TARGET_ARCH', 'arm64') if sys.platform == 'darwin' else None
 
 a = Analysis(
