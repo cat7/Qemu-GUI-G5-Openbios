@@ -34,7 +34,7 @@ def nic_option(net) -> str:
         return "none"
     tail = f"model=sungem,mac={net.mac}"
     if net.mode == "user":
-        fwd = "".join(f",hostfwd={r.proto}::{r.host_port}-{r.guest_addr}:{r.guest_port}"
+        fwd = "".join(f",hostfwd={r.proto}::{r.host_port}-:{r.guest_port}"
                       for r in net.hostfwd if not r.empty)
         return f"user,{tail}{fwd}"
     if net.mode in ("vmnet-bridged", "tap"):

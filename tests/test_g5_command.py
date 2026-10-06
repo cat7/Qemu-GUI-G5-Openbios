@@ -637,11 +637,11 @@ class PortForwarding(unittest.TestCase):
         self.assertEqual(self.nic([HostFwd("tcp", "8080", "80")]),
                          self.BASE + ",hostfwd=tcp::8080-:80")
 
-    def test_four_rules_tcp_udp_and_guest_address_skip_empty_rows(self):
+    def test_four_rules_tcp_udp_skip_empty_rows(self):
         rules = [HostFwd("tcp", "8080", "80"), HostFwd(), HostFwd("udp", "5353", "53"),
-                 HostFwd("tcp", "2222", "22", "10.0.2.20"), HostFwd("udp", "69", "69")]
+                 HostFwd("tcp", "2222", "22"), HostFwd("udp", "69", "69")]
         self.assertEqual(self.nic(rules), self.BASE + ",hostfwd=tcp::8080-:80"
-                         ",hostfwd=udp::5353-:53,hostfwd=tcp::2222-10.0.2.20:22"
+                         ",hostfwd=udp::5353-:53,hostfwd=tcp::2222-:22"
                          ",hostfwd=udp::69-:69")
 
     def test_ignored_when_the_network_is_not_user(self):
@@ -659,7 +659,7 @@ class PortForwarding(unittest.TestCase):
 
     def test_round_trip_and_old_records(self):
         net = Network("user", self.MAC, "", [HostFwd("udp", "5353", "53"),
-                                             HostFwd("tcp", "2222", "22", "10.0.2.20"), HostFwd()])
+                                             HostFwd("tcp", "2222", "22"), HostFwd()])
         d = json.loads(json.dumps(net.to_dict()))
         self.assertEqual(d["hostfwd"][0], {"proto": "udp", "host_port": "5353", "guest_port": "53"})
         self.assertEqual(len(d["hostfwd"]), 2)
@@ -668,6 +668,13 @@ class PortForwarding(unittest.TestCase):
         self.assertEqual(Network.from_dict({"mode": "user", "mac": self.MAC}).hostfwd, [])
         self.assertNotIn("hostfwd", Network().to_dict())
 
+    def test_old_record_with_guest_addr_loads_and_is_dropped(self):
+        d = Network.from_dict({"mode": "user", "mac": self.MAC, "hostfwd": [
+            {"proto": "tcp", "host_port": "2222", "guest_port": "22", "guest_addr": "10.0.2.20"}]})
+        self.assertEqual(self.nic(d.hostfwd), self.BASE + ",hostfwd=tcp::2222-:22")
+        self.assertEqual(d.to_dict()["hostfwd"],
+                         [{"proto": "tcp", "host_port": "2222", "guest_port": "22"}])
+
     def check(self, rules, platform="darwin", **kw):
         m = plain(network=Network("user", self.MAC, "", rules), **kw)
         return model.validate(m, None, platform, check_files=False)
@@ -675,8 +682,7 @@ class PortForwarding(unittest.TestCase):
     def test_validation(self):
         for bad in (HostFwd("tcp", "0", "80"), HostFwd("tcp", "70000", "80"),
                     HostFwd("tcp", "abc", "80"), HostFwd("tcp", "80", ""),
-                    HostFwd("tcp", "", "80"), HostFwd("icmp", "80", "80"),
-                    HostFwd("tcp", "80", "80", "not.an.ip")):
+                    HostFwd("tcp", "", "80"), HostFwd("icmp", "80", "80")):
             errors, _ = self.check([bad])
             self.assertTrue(errors, bad)
         errors, _ = self.check([HostFwd("tcp", "8080", "80"), HostFwd("udp", "65535", "1")])

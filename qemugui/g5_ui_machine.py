@@ -402,20 +402,19 @@ class MachineEditor(tk.Toplevel):
                            "Default (slirp) only; host ports below 1024 can need root.",
                   foreground=GREY, wraplength=EDITOR_WIDTH - 60, justify="left").grid(
             row=1, column=0, columnspan=5, sticky="w", pady=(0, 4))
-        for c, t in enumerate(("Protocol", "Host port", "Guest port", "Guest address")):
+        for c, t in enumerate(("Protocol", "Host port", "Guest port")):
             ttk.Label(ff, text=t, foreground=GREY).grid(row=2, column=c, sticky="w", padx=(0, 6))
         self.fwd_rows = []
         for i in range(model.HOSTFWD_ROWS):
             proto = tk.StringVar(value="tcp")
-            hp, gp, ga = tk.StringVar(), tk.StringVar(), tk.StringVar()
+            hp, gp = tk.StringVar(), tk.StringVar()
             w = [ttk.Combobox(ff, textvariable=proto, state="readonly", width=5,
                               values=list(model.HOSTFWD_PROTOS)),
                  ttk.Entry(ff, textvariable=hp, width=8),
-                 ttk.Entry(ff, textvariable=gp, width=8),
-                 ttk.Entry(ff, textvariable=ga, width=14)]
+                 ttk.Entry(ff, textvariable=gp, width=8)]
             for c, x in enumerate(w):
                 x.grid(row=3 + i, column=c, sticky="w", padx=(0, 6), pady=1)
-            self.fwd_rows.append((proto, hp, gp, ga, w))
+            self.fwd_rows.append((proto, hp, gp, w))
         ttk.Separator(f).grid(row=5, column=0, columnspan=3, sticky="ew", pady=10)
         ttk.Label(f, text="Sound interface", font=("", 0, "bold")).grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(0, 4))
@@ -753,12 +752,11 @@ class MachineEditor(tk.Toplevel):
         self.net_mode.set(model.network_mode_label(m.network.mode))
         self.mac_var.set(m.network.mac)
         self.ifname_var.set(m.network.ifname)
-        for i, (proto, hp, gp, ga, _w) in enumerate(self.fwd_rows):
+        for i, (proto, hp, gp, _w) in enumerate(self.fwd_rows):
             r = m.network.hostfwd[i] if i < len(m.network.hostfwd) else model.HostFwd()
             proto.set(r.proto if r.proto in model.HOSTFWD_PROTOS else "tcp")
             hp.set(r.host_port)
             gp.set(r.guest_port)
-            ga.set(r.guest_addr)
         self._net_mode_changed()
         self.audio_var.set(m.audio)
         self.usb_audio_var.set(m.usb_audio)
@@ -803,8 +801,8 @@ class MachineEditor(tk.Toplevel):
         m.boot_slot = next((i for i, row in enumerate(self.drive_rows) if row.boot.get()), None)
         mode = model.network_mode_by_label(self.net_mode.get())
         ifname = self.ifname_var.get().strip() if mode in model.NETWORK_MODES_WITH_IFNAME else ""
-        fwd = [model.HostFwd(p.get(), h.get().strip(), g.get().strip(), a.get().strip())
-               for p, h, g, a, _w in self.fwd_rows]
+        fwd = [model.HostFwd(p.get(), h.get().strip(), g.get().strip())
+               for p, h, g, _w in self.fwd_rows]
         m.network = Network(mode, self.mac_var.get().strip(), ifname, fwd)
         m.audio = self.audio_var.get()
         m.usb_audio = self.usb_audio_var.get()

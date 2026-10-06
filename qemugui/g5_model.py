@@ -57,7 +57,6 @@ DEFAULT_MAC = "00:05:02:12:34:56"
 
 SCHEMA = 1
 NAME_RE = re.compile(r"^[A-Za-z0-9._ -]+$")
-GUEST_ADDR_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 VNC_RE = re.compile(r"^([A-Za-z0-9.\-]*:)?\d+$")
 RTC_BASE_RE = re.compile(r"^(utc|localtime|\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})?)$")
@@ -221,25 +220,20 @@ class HostFwd:
     proto: str = "tcp"
     host_port: str = ""
     guest_port: str = ""
-    guest_addr: str = ""
 
     def to_dict(self) -> dict:
-        d = {"proto": self.proto, "host_port": self.host_port, "guest_port": self.guest_port}
-        if self.guest_addr:
-            d["guest_addr"] = self.guest_addr
-        return d
+        return {"proto": self.proto, "host_port": self.host_port, "guest_port": self.guest_port}
 
     @classmethod
     def from_dict(cls, d: Any) -> "HostFwd":
         if not isinstance(d, dict):
             return cls()
         return cls(str(d.get("proto") or "tcp"), str(d.get("host_port") or "").strip(),
-                   str(d.get("guest_port") or "").strip(),
-                   str(d.get("guest_addr") or "").strip())
+                   str(d.get("guest_port") or "").strip())
 
     @property
     def empty(self) -> bool:
-        return not (self.host_port or self.guest_port or self.guest_addr)
+        return not (self.host_port or self.guest_port)
 
 
 def _port_ok(text: str) -> bool:
@@ -541,8 +535,6 @@ def validate(m: Machine, qemu_dir: str | None, platform: str = paths.HOST_PLATFO
                 errors.append("Port forwarding needs host and guest ports from 1 to 65535.")
             elif int(r.host_port) < 1024:
                 low = True
-            if r.guest_addr and not GUEST_ADDR_RE.match(r.guest_addr):
-                errors.append("A forwarding guest address has to look like 10.0.2.15.")
         if low and net.mode == "user" and not paths.is_windows(platform) \
                 and not (platform == "darwin" and m.usb_host_devices):
             warnings.append("Host ports below 1024 can need root; this machine does not "
