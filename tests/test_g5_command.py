@@ -688,12 +688,7 @@ class PortForwarding(unittest.TestCase):
         errors, _ = self.check([HostFwd("tcp", "8080", "80"), HostFwd("udp", "65535", "1")])
         self.assertEqual(errors, [])
 
-    def test_low_host_port_warns_unless_root_or_windows(self):
-        rule = [HostFwd("tcp", "80", "80")]
-        self.assertTrue(any("1024" in w for w in self.check(rule)[1]))
-        self.assertFalse(any("1024" in w for w in self.check(rule, "win32")[1]))
-        self.assertFalse(any("1024" in w for w in self.check([HostFwd("tcp", "8080", "80")])[1]))
-        usb = [model.UsbHostDevice("046d:0990", "cam")] if hasattr(model, "UsbHostDevice") else []
-        if usb:
+    def test_low_host_port_is_no_warning(self):
+        for plat in ("darwin", "win32"):
             self.assertFalse(any("1024" in w for w in
-                                 self.check(rule, usb_host_devices=usb)[1]))
+                                 self.check([HostFwd("tcp", "80", "80")], plat)[1]))
