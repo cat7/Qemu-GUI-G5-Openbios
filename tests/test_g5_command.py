@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE.parent))
 from qemugui import g5_command as command  # noqa: E402
 from qemugui import g5_model as model  # noqa: E402
 from qemugui import paths  # noqa: E402
-from qemugui.g5_model import Machine, Drive, Gpu, Network, PromEnv  # noqa: E402
+from qemugui.g5_model import Machine, Drive, Gpu, Network, PromEnv, HostFwd  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
 QD = "/Applications/qemu-g5"
@@ -618,3 +618,76 @@ class ImageFormatDetection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortForwarding(unittest.TestCase):
+    MAC = "00:05:02:12:34:56"
+    BASE = f"user,model=sungem,mac={MAC}"
+
+    def nic(self, rules, mode="user", platform="darwin"):
+        m = plain(network=Network(mode, self.MAC, "", rules))
+        argv = argv_of(m, platform)
+        return argv[argv.index("-nic") + 1]
+
+    def test_no_rules_leaves_the_nic_alone(self):
+        self.assertEqual(self.nic([]), self.BASE)
+        self.assertEqual(self.nic([HostFwd(), HostFwd()]), self.BASE)
+
+    def test_one_rule(self):
+        self.assertEqual(self.nic([HostFwd("tcp", "8080", "80")]),
+                         self.BASE + ",hostfwd=tcp::8080-:80")
+
+    def test_four_rules_tcp_udp_and_guest_address_skip_empty_rows(self):
+        rules = [HostFwd("tcp", "8080", "80"), HostFwd(), HostFwd("udp", "5353", "53"),
+                 HostFwd("tcp", "2222", "22", "10.0.2.20"), HostFwd("udp", "69", "69")]
+        self.assertEqual(self.nic(rules), self.BASE + ",hostfwd=tcp::8080-:80"
+                         ",hostfwd=udp::5353-:53,hostfwd=tcp::2222-10.0.2.20:22"
+                         ",hostfwd=udp::69-:69")
+
+    def test_ignored_when_the_network_is_not_user(self):
+        self.assertEqual(self.nic([HostFwd("tcp", "8080", "80")], "vmnet-shared"),
+                         f"vmnet-shared,model=sungem,mac={self.MAC}")
+        self.assertEqual(self.nic([HostFwd("tcp", "8080", "80")], "none"), "none")
+
+    def test_win32_bat_quotes_the_nic_token(self):
+        m = plain(network=Network("user", self.MAC, "", [HostFwd("tcp", "8080", "80")]))
+        argv = command.build_argv(m, r"C:\q", r"C:\m", "win32")
+        self.assertEqual(argv[argv.index("-nic") + 1], self.BASE + ",hostfwd=tcp::8080-:80")
+        bat = command.render_bat(argv, command.extra_count(m, "win32"))
+        self.assertIn(self.BASE + ",hostfwd=tcp::8080-:80", bat)
+        self.assertEqual(bat.count("hostfwd="), 1)
+
+    def test_round_trip_and_old_records(self):
+        net = Network("user", self.MAC, "", [HostFwd("udp", "5353", "53"),
+                                             HostFwd("tcp", "2222", "22", "10.0.2.20"), HostFwd()])
+        d = json.loads(json.dumps(net.to_dict()))
+        self.assertEqual(d["hostfwd"][0], {"proto": "udp", "host_port": "5353", "guest_port": "53"})
+        self.assertEqual(len(d["hostfwd"]), 2)
+        back = Network.from_dict(d)
+        self.assertEqual([r.to_dict() for r in back.hostfwd], d["hostfwd"])
+        self.assertEqual(Network.from_dict({"mode": "user", "mac": self.MAC}).hostfwd, [])
+        self.assertNotIn("hostfwd", Network().to_dict())
+
+    def check(self, rules, platform="darwin", **kw):
+        m = plain(network=Network("user", self.MAC, "", rules), **kw)
+        return model.validate(m, None, platform, check_files=False)
+
+    def test_validation(self):
+        for bad in (HostFwd("tcp", "0", "80"), HostFwd("tcp", "70000", "80"),
+                    HostFwd("tcp", "abc", "80"), HostFwd("tcp", "80", ""),
+                    HostFwd("tcp", "", "80"), HostFwd("icmp", "80", "80"),
+                    HostFwd("tcp", "80", "80", "not.an.ip")):
+            errors, _ = self.check([bad])
+            self.assertTrue(errors, bad)
+        errors, _ = self.check([HostFwd("tcp", "8080", "80"), HostFwd("udp", "65535", "1")])
+        self.assertEqual(errors, [])
+
+    def test_low_host_port_warns_unless_root_or_windows(self):
+        rule = [HostFwd("tcp", "80", "80")]
+        self.assertTrue(any("1024" in w for w in self.check(rule)[1]))
+        self.assertFalse(any("1024" in w for w in self.check(rule, "win32")[1]))
+        self.assertFalse(any("1024" in w for w in self.check([HostFwd("tcp", "8080", "80")])[1]))
+        usb = [model.UsbHostDevice("046d:0990", "cam")] if hasattr(model, "UsbHostDevice") else []
+        if usb:
+            self.assertFalse(any("1024" in w for w in
+                                 self.check(rule, usb_host_devices=usb)[1]))

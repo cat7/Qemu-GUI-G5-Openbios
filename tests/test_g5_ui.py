@@ -282,6 +282,24 @@ class UsbAudioCheckbox(unittest.TestCase):
 
 
 @unittest.skipUnless(_tk_available(), "no display")
+class PortForwardRows(UsbAudioCheckbox):
+
+    def test_four_rows_load_and_collect_with_values_kept_when_disabled(self):
+        rules = [model.HostFwd("udp", "5353", "53"), model.HostFwd("tcp", "8080", "80", "10.0.2.20")]
+        ed = self._editor(Machine(name="t", network=model.Network("user", model.DEFAULT_MAC, "", rules)))
+        self.assertEqual(len(ed.fwd_rows), 4)
+        self.assertEqual(str(ed.fwd_rows[0][4][1].cget("state")), "normal")
+        ed.net_mode.set(model.network_mode_label("none"))
+        ed._net_mode_changed()
+        self.assertEqual(str(ed.fwd_rows[0][4][1].cget("state")), "disabled")
+        got = [r.to_dict() for r in ed.collect().network.hostfwd if not r.empty]
+        self.assertEqual(got, [r.to_dict() for r in rules])
+        ed.net_mode.set(model.network_mode_label("user"))
+        ed._net_mode_changed()
+        self.assertEqual(str(ed.fwd_rows[3][4][2].cget("state")), "normal")
+
+
+@unittest.skipUnless(_tk_available(), "no display")
 class TheNetworkAndSoundTabFollowsTheHost(unittest.TestCase):
     """A new machine opened on either host shows slirp, the host's own
     interface label and the host's own sound backend."""
