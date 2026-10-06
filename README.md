@@ -1,8 +1,8 @@
 # Qemu-system-ppc64 G5 Openbios GUI
 
 A portable launcher for the Power Mac G5 (PowerMac7,3) machine of
-`qemu-system-ppc64`, branch `powermac73` of github.com/cat7/qemu, with the
-OpenBIOS of branch `powermac73` of github.com/cat7/openbios. The program
+`qemu-system-ppc64`, branch `G5-openbios` of github.com/cat7/qemu, with the
+OpenBIOS of branch `G5-openbios` of github.com/cat7/openbios. The program
 must sit in the same folder as `qemu-system-ppc64`, `openbios-qemu.elf`
 and `pc-bios/` (and `qemu-img` for making new disks). The graphics card
 ROMs (`*.rom`) are picked from that folder.

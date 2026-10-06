@@ -4,7 +4,7 @@
 with a 970FX CPU (the U3 memory controller, K2 I/O), started with its own
 OpenBIOS (``-bios openbios-qemu.elf``).
 
-Facts the record encodes (qemu ``powermac73``, ``hw/ppc/mac_newworld.c``):
+Facts the record encodes (qemu ``G5-openbios``, ``hw/ppc/mac_newworld.c``):
 
 * Drives. The K2 ATA-100 has two positions and holds the optical drives;
   the K2 SATA has two ports (buses ``sata.0``/``sata.1``) for hard disks.
