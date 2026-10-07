@@ -6,7 +6,7 @@
 #   /Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13 \
 #       -m PyInstaller --noconfirm G5GUI.spec
 #
-# The macOS bundle is arm64 unless QEMUGUI_TARGET_ARCH says otherwise
+# The macOS bundle is universal2 unless QEMUGUI_TARGET_ARCH says otherwise
 # (x86_64 or universal2).
 #
 # Put the result ("dist/Qemu-system-ppc64 G5 Openbios GUI.app" on macOS, the single
@@ -18,7 +18,7 @@ import os
 import sys
 
 NAME = 'Qemu-system-ppc64 G5 Openbios GUI'
-TARGET_ARCH = os.environ.get('QEMUGUI_TARGET_ARCH', 'arm64') if sys.platform == 'darwin' else None
+TARGET_ARCH = (os.environ.get('QEMUGUI_TARGET_ARCH') or 'universal2') if sys.platform == 'darwin' else None
 
 a = Analysis(
     ['g5_gui.py'],

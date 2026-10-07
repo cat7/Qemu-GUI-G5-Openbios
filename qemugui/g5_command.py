@@ -102,7 +102,7 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
 
     argv += ["-L", _path(PC_BIOS_DIR, qd, platform)]
     argv += ["-M", model.MACHINE_TYPE, "-cpu", model.CPU_TYPE]
-    argv += ["-bios", _path(model.FIRMWARE_FILE, qd, platform)]
+    argv += ["-bios", _path(m.bios or model.FIRMWARE_FILE, qd, platform)]
     argv += ["-smp", str(int(m.smp))]
     if m.vnc.strip():
         argv += ["-display", "none", "-vnc", m.vnc.strip()]

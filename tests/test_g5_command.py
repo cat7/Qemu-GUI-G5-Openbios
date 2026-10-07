@@ -230,6 +230,50 @@ class Graphics(unittest.TestCase):
         self.assertEqual(model.roms_in(None), [])
         self.assertEqual(model.roms_in("/no/such/folder"), [])
 
+    def test_bios_in_lists_firmware_candidates(self):
+        with tempfile.TemporaryDirectory() as td:
+            for n in ("b.rom", "x.ELF", "OpenBIOS-old", "openbios-qemu.elf", "notes.txt"):
+                (Path(td) / n).write_text("")
+            (Path(td) / "dir.elf").mkdir()
+            self.assertEqual(model.bios_in(td), ["OpenBIOS-old", "openbios-qemu.elf", "x.ELF"])
+        self.assertEqual(model.bios_in(None), [])
+
+    def test_bios_default_and_old_record(self):
+        self.assertEqual(plain().bios, "openbios-qemu.elf")
+        old = json.loads(plain().to_json())
+        del old["bios"]
+        m = Machine.from_dict(old)
+        self.assertEqual(m.bios, "openbios-qemu.elf")
+        self.assertEqual(argv_of(m)[:9], BASE)
+        old["bios"] = ""
+        self.assertEqual(Machine.from_dict(old).bios, "openbios-qemu.elf")
+
+    def test_bios_custom_file(self):
+        m = plain(bios="openbios-test.elf")
+        self.assertEqual(argv_of(m)[7:9], ["-bios", f"{QD}/openbios-test.elf"])
+        self.assertEqual(Machine.from_json(m.to_json()).bios, "openbios-test.elf")
+        m = plain(bios="/elsewhere/fw.elf")
+        self.assertEqual(argv_of(m)[7:9], ["-bios", "/elsewhere/fw.elf"])
+
+    def test_bios_windows_paths(self):
+        q = r"C:\qemu-g5"
+        m = plain(bios="openbios-test.elf")
+        argv = argv_of(m, "win32", q, r"C:\m")
+        self.assertEqual(argv[argv.index("-bios") + 1], r"C:\qemu-g5\openbios-test.elf")
+        m = plain(bios=r"D:\fw dir\fw.elf")
+        argv = argv_of(m, "win32", q, r"C:\m")
+        self.assertEqual(argv[argv.index("-bios") + 1], r"D:\fw dir\fw.elf")
+        bat = command.render_bat(argv, 0)
+        self.assertIn(r'"D:\fw dir\fw.elf"', bat)
+
+    def test_missing_custom_bios_warns(self):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "qemu-system-ppc64").write_text("")
+            (Path(td) / "openbios-qemu.elf").write_text("")
+            m = plain(bios="other.elf")
+            _, warnings = model.validate(m, td, "darwin")
+            self.assertTrue(any("other.elf" in w for w in warnings), warnings)
+
 
 class Drives(unittest.TestCase):
 

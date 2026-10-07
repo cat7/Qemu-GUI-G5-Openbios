@@ -26,6 +26,7 @@ KIND_BY_LABEL = {v: k for k, v in KIND_LABELS.items()}
 IMAGE_TYPES = [("Hard disks and CDs", "*.img *.dsk *.qcow2 *.iso *.toast *.cdr *.dmg"),
                ("Every file", "*")]
 ROM_TYPES = [("ROM files", "*.rom *.ROM"), ("Every file", "*")]
+BIOS_TYPES = [("OpenBIOS", "*.elf openbios*"), ("Every file", "*")]
 CDROM_EXTS = {".iso", ".toast", ".cdr", ".dmg"}
 
 NO_GPU = "vga"
@@ -247,6 +248,23 @@ class MachineEditor(tk.Toplevel):
         self.smp_var = tk.StringVar()
         ttk.Spinbox(f, textvariable=self.smp_var, from_=model.SMP_MIN, to=model.SMP_MAX,
                     width=5).grid(row=r, column=1, sticky="w", pady=4)
+        r += 1
+        ttk.Label(f, text="OpenBIOS:").grid(row=r, column=0, sticky="w", pady=4)
+        self.bios_var = tk.StringVar(value=model.FIRMWARE_FILE)
+        self.bios_cb = ttk.Combobox(f, textvariable=self.bios_var, width=40,
+                                    values=model.bios_in(self.qemu_dir))
+        self.bios_cb.grid(row=r, column=1, sticky="ew", padx=2, pady=4)
+        ttk.Button(f, text="Choose…", command=self._choose_bios).grid(
+            row=r, column=2, sticky="w", padx=4, pady=4)
+
+    def _choose_bios(self):
+        current = self.bios_var.get().strip()
+        if current and not Path(current).is_absolute():
+            current = paths.join_path(self.qemu_dir, current)
+        start = paths.browse_start_dir(current, self.qemu_dir)
+        f = filedialog.askopenfilename(parent=self, initialdir=str(start), filetypes=BIOS_TYPES)
+        if f:
+            self.bios_var.set(rom_value(f, self.qemu_dir))
 
     def _build_display(self):
         f = self._tab("Display")
@@ -733,6 +751,7 @@ class MachineEditor(tk.Toplevel):
         self.name_var.set(m.name)
         self.ram_var.set(str(m.ram_mb))
         self.smp_var.set(str(m.smp))
+        self.bios_var.set(m.bios or model.FIRMWARE_FILE)
         self.display_var.set(m.display)
         self.vnc_on.set(bool(m.vnc.strip()))
         self.vnc_var.set(m.vnc)
@@ -786,6 +805,7 @@ class MachineEditor(tk.Toplevel):
             m.smp = int(self.smp_var.get().strip())
         except ValueError:
             m.smp = -1
+        m.bios = self.bios_var.get().strip() or model.FIRMWARE_FILE
         m.display = self.display_var.get()
         m.vnc = self.vnc_var.get().strip() if self.vnc_on.get() else ""
         gpu = self.gpu_model_var.get()

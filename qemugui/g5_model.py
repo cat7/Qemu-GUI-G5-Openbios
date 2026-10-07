@@ -161,6 +161,18 @@ def roms_in(folder: str | Path | None) -> list[str]:
                    if p.is_file() and p.suffix.lower() in ROM_SUFFIXES), key=str.lower)
 
 
+def bios_in(folder: str | Path | None) -> list[str]:
+    """The firmware candidates lying in *folder*: ``*.elf`` and ``openbios*``."""
+    if not folder:
+        return []
+    try:
+        entries = list(Path(folder).iterdir())
+    except OSError:
+        return []
+    return sorted((p.name for p in entries if p.is_file() and (
+        p.suffix.lower() == ".elf" or p.name.lower().startswith("openbios"))), key=str.lower)
+
+
 @dataclass
 class Drive:
     kind: str = "disk"
@@ -367,6 +379,7 @@ class Machine:
     name: str = "New machine"
     ram_mb: int = RAM_DEFAULT
     smp: int = 1
+    bios: str = FIRMWARE_FILE
     display: str = "cocoa"
     vnc: str = ""                  # "" = off; else a -vnc display spec, e.g. ":1"
     audio: str = "default"
@@ -389,6 +402,7 @@ class Machine:
             "name": self.name,
             "ram_mb": self.ram_mb,
             "smp": self.smp,
+            "bios": self.bios,
             "display": self.display,
             "vnc": self.vnc,
             "audio": self.audio,
@@ -417,6 +431,7 @@ class Machine:
             name=str(d.get("name", "New machine")),
             ram_mb=int(d.get("ram_mb", RAM_DEFAULT)),
             smp=int(d.get("smp", 1) or 1),
+            bios=str(d.get("bios") or FIRMWARE_FILE),
             display=str(d.get("display") or default_display(paths.HOST_PLATFORM)),
             vnc=str(d.get("vnc", "") or ""),
             audio=str(d.get("audio", "default")),
@@ -593,7 +608,7 @@ def validate(m: Machine, qemu_dir: str | None, platform: str = paths.HOST_PLATFO
     if check_files:
         qd = qemu_dir or ""
         if qd and paths.has_qemu(qd, platform):
-            fw = paths.join_path(qd, FIRMWARE_FILE, platform)
+            fw = paths.join_path(qd, m.bios or FIRMWARE_FILE, platform)
             if not Path(fw).is_file():
                 warnings.append(f"The firmware is missing: {fw}")
             rel = gpu.romfile if gpu else None
