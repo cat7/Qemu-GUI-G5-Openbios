@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from dataclasses import dataclass, asdict
@@ -210,6 +211,9 @@ def default_audio_label(platform: str = HOST_PLATFORM) -> str:
 # ------------------------------------------------------------ image formats
 
 FORMATS = ("raw", "qcow2")
+# What a drive row can name: dmg and cue are read-only sources QEMU opens
+# itself, never something a new disk is created as.
+DRIVE_FORMATS = FORMATS + ("dmg", "cue")
 
 # QEMU probes an image by its magic number; do the same, so an existing file
 # picked in the editor is described correctly instead of always as "raw".
@@ -217,7 +221,7 @@ FORMAT_MAGIC = ((b"QFI\xfb", "qcow2"),
                 (b"KDMV", "vmdk"),
                 (b"conectix", "vpc"),
                 (b"<<< Oracle VM VirtualBox Disk Image", "vdi"))
-FORMAT_BY_SUFFIX = {".qcow2": "qcow2", ".qcow": "qcow2", ".vmdk": "vmdk",
+FORMAT_BY_SUFFIX = {".dmg": "dmg", ".cue": "cue", ".qcow2": "qcow2", ".qcow": "qcow2", ".vmdk": "vmdk",
                     ".vdi": "vdi", ".vhd": "vpc", ".vhdx": "vpc"}
 MAGIC_LENGTH = max(len(magic) for magic, _ in FORMAT_MAGIC)
 
@@ -240,7 +244,7 @@ def detect_format(path: str) -> str:
         if head.startswith(magic):
             name = fmt
             break
-    return name if name in FORMATS else "raw"
+    return name if name in DRIVE_FORMATS else "raw"
 
 
 def drive_format(stored: str, file: str, base: str) -> str:
@@ -255,6 +259,42 @@ def drive_format(stored: str, file: str, base: str) -> str:
     if not os.path.isfile(p):
         return "raw"
     return detect_format(p)
+
+
+HOST_DRIVE_RE = re.compile(r"^(/dev/\S+|(\\\\\.\\)?[A-Za-z]:\\?)$")
+
+# A CD slot names a host optical DRIVE, not a disc: "drive:<vendor product>"
+# on macOS, the drive letter on Windows. Records from before that hold the
+# disc's /dev/diskN; they follow the first optical drive.
+DRIVE_PREFIX = "drive:"
+
+
+def is_host_drive(file: str) -> bool:
+    """A drive entry that names a host optical drive (drive:<name>, D:, or
+    an old /dev/diskN) rather than an image file."""
+    f = (file or "").strip()
+    return f.startswith(DRIVE_PREFIX) and len(f) > len(DRIVE_PREFIX) or \
+        bool(HOST_DRIVE_RE.match(f))
+
+
+def drive_letter(file: str) -> str:
+    """D from "D:", "d:\\" or "\\\\.\\D:"; "" if *file* is not a letter."""
+    f = (file or "").strip()
+    m = re.fullmatch(r"(?:\\\\\.\\)?([A-Za-z]):\\?", f)
+    return m.group(1).upper() if m else ""
+
+
+def host_drive_option(file: str, platform: str = HOST_PLATFORM) -> str:
+    """The -drive source naming the host drive. A record QEMU on this
+    platform cannot name a drive by goes to the first optical drive."""
+    f = (file or "").strip()
+    if is_windows(platform):
+        letter = drive_letter(f)
+        return f"driver=host_cdrom,drive={letter}:" if letter else \
+            "driver=host_cdrom,filename=/dev/cdrom"
+    if f.startswith(DRIVE_PREFIX):
+        return f"driver=host_cdrom,drive={qopt(f[len(DRIVE_PREFIX):])}"
+    return "driver=host_cdrom,filename=/dev/cdrom"
 
 
 def sudo_applies(needs_sudo: bool, platform: str = HOST_PLATFORM) -> bool:

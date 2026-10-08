@@ -36,7 +36,11 @@ USB_AUDIO = ["-audiodev", "coreaudio,id=usb", "-device", "usb-audio,audiodev=usb
 
 
 def load_fixture(name: str) -> Machine:
-    return Machine.load(FIXTURES / name)
+    """CD audio out is off here: the golden lines have no ide-cd audiodev
+    (see test_cd_drives)."""
+    m = Machine.load(FIXTURES / name)
+    m.cd_audio = False
+    return m
 
 
 def argv_of(m: Machine, platform: str = "darwin", qd: str = QD, md: str = MD) -> list[str]:
@@ -99,7 +103,7 @@ class GoldenCommandLines(unittest.TestCase):
             "-prom-env", "auto-boot?=true"])
 
     def test_cd_boot(self):
-        m = plain(boot_slot=model.ATA_MASTER,
+        m = plain(boot_slot=model.ATA_MASTER, cd_audio=False,
                   drives=[Drive("cdrom", "/iso/install.iso"), None,
                           Drive("disk", "/hd/a.img"), None])
         self.assertEqual(argv_of(m), BASE + [

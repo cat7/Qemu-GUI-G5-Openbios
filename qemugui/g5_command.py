@@ -22,6 +22,7 @@ PC_BIOS_DIR = "pc-bios"
 GPU_SLOT = "bus=pci.0,addr=0x10"
 ONBOARD_AUDIODEV = "snd0"
 USB_AUDIODEV = "usb"
+CD_AUDIODEV = "cdaudio"
 
 
 def _path(p: str, base: str, platform: str) -> str:
@@ -49,6 +50,19 @@ def needs_sudo(m: Machine, platform: str = paths.HOST_PLATFORM) -> bool:
     root."""
     usb = platform == "darwin" and bool(m.usb_host_devices)
     return paths.sudo_applies(m.network.needs_sudo or m.network.low_host_port or usb, platform)
+
+
+def _has_cd(m: Machine) -> bool:
+    return any(d and d.file and d.kind == "cdrom" for d in m.drives)
+
+
+def cd_audiodev_id(m: Machine, extra: list[str]) -> str:
+    """The usb-audio backend when one is added, else a backend of its own."""
+    return USB_AUDIODEV if _usb_audio_added(m, extra) else CD_AUDIODEV
+
+
+def _usb_audio_added(m: Machine, extra: list[str]) -> bool:
+    return m.usb_audio and not any(t.split(",")[0] == "usb-audio" for t in extra)
 
 
 def prom_env_tokens(m: Machine) -> list[str]:
@@ -80,15 +94,21 @@ def drive_tokens(m: Machine, machine_dir: str, platform: str) -> list[str]:
     for i, d in enumerate(m.drives):
         if d is None or not d.file:
             continue
-        spec = (f"file={qopt(_path(d.file, machine_dir, platform))},"
-                f"format={drive_format(d.format, d.file, machine_dir)}")
+        host = d.kind == "cdrom" and paths.is_host_drive(d.file)
+        fmt = "raw" if host else drive_format(d.format, d.file, machine_dir)
+        spec = (paths.host_drive_option(d.file, platform) if host else
+                f"file={qopt(_path(d.file, machine_dir, platform))},format={fmt}")
         if model.is_sata(i):
             port = model.SATA_SLOTS.index(i)
-            out += ["-drive", f"{spec},if=none,id=sata{port}",
+            snap = ",snapshot=on" if fmt == "dmg" else ""
+            out += ["-drive", f"{spec},if=none,id=sata{port}{snap}",
                     "-device", f"ide-hd,bus=sata.{port},drive=sata{port}"]
+        elif d.kind == "cdrom":
+            tail = ",readonly=on" if fmt == "dmg" else ""
+            out += ["-drive", f"{spec},media=cdrom,index={model.ata_index(m, i)}{tail}"]
         else:
-            media = "cdrom" if d.kind == "cdrom" else "disk"
-            out += ["-drive", f"{spec},media={media},index={model.ata_index(m, i)}"]
+            snap = ",snapshot=on" if fmt == "dmg" else ""
+            out += ["-drive", f"{spec},media=disk,index={model.ata_index(m, i)}{snap}"]
     return out
 
 
@@ -118,9 +138,14 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     argv += ["-audiodev", f"{audio},id={ONBOARD_AUDIODEV}",
              "-global", f"macio-newworld.audiodev={ONBOARD_AUDIODEV}"]
     extra = split_extra_args(m.extra_args, platform)
-    if m.usb_audio and not any(t.split(",")[0] == "usb-audio" for t in extra):
+    if _usb_audio_added(m, extra):
         argv += ["-audiodev", f"{audio},id={USB_AUDIODEV}",
                  "-device", f"usb-audio,audiodev={USB_AUDIODEV}"]
+    if m.cd_audio and _has_cd(m):
+        # The ATA-100 CDs are made from -drive index=, so the property goes on every ide-cd.
+        if not _usb_audio_added(m, extra):
+            argv += ["-audiodev", f"{audio},id={CD_AUDIODEV}"]
+        argv += ["-global", f"ide-cd.audiodev={cd_audiodev_id(m, extra)}"]
 
     if m.gpu:
         argv += ["-device", gpu_option(m.gpu, qd, platform)]

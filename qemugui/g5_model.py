@@ -51,7 +51,8 @@ from .paths import (DISPLAYS, default_display, AUDIO_DEFAULT,
                     NETWORK_MODES, NETWORK_MODE_PLATFORM, NETWORK_MODES_WITH_IFNAME,
                     NETWORK_MODE_LABELS, network_mode_label, network_mode_by_label,
                     network_modes_for_host, network_labels_for_host, default_ifname,
-                    ifname_label, default_audio_label, FORMATS, detect_format)
+                    ifname_label, default_audio_label, FORMATS, DRIVE_FORMATS, detect_format,
+                    is_host_drive)
 
 DEFAULT_MAC = "00:05:02:12:34:56"
 
@@ -112,6 +113,12 @@ def resolved_boot_kind(m: Machine) -> str:
     if i is not None and 0 <= i < len(m.drives) and m.drives[i] and m.drives[i].file:
         return m.drives[i].kind if m.drives[i].kind in DRIVE_KINDS else "disk"
     return "disk"
+
+
+def host_drives(m: Machine) -> list[str]:
+    """The host optical drives the machine's CD slots name, in slot order."""
+    return [d.file.strip() for d in m.drives
+            if d and d.kind == "cdrom" and is_host_drive(d.file)]
 
 
 def lowest_slot_of_kind(m: Machine, kind: str) -> int | None:
@@ -384,6 +391,7 @@ class Machine:
     vnc: str = ""                  # "" = off; else a -vnc display spec, e.g. ":1"
     audio: str = "default"
     usb_audio: bool = False
+    cd_audio: bool = True          # CD drives play audio discs out of the sound backend
     usb_tablet: bool = False
     gpu: Gpu | None = None
     network: Network = field(default_factory=Network)
@@ -407,6 +415,7 @@ class Machine:
             "vnc": self.vnc,
             "audio": self.audio,
             "usb_audio": self.usb_audio,
+            "cd_audio": self.cd_audio,
             "usb_tablet": self.usb_tablet,
             "gpu": self.gpu.to_dict() if self.gpu else None,
             "network": self.network.to_dict(),
@@ -436,6 +445,7 @@ class Machine:
             vnc=str(d.get("vnc", "") or ""),
             audio=str(d.get("audio", "default")),
             usb_audio=bool(d.get("usb_audio", False)),
+            cd_audio=bool(d.get("cd_audio", True)),
             usb_tablet=bool(d.get("usb_tablet", False)),
             gpu=Gpu.from_dict(d.get("gpu")),
             network=Network.from_dict(d.get("network")),
@@ -630,7 +640,7 @@ def validate(m: Machine, qemu_dir: str | None, platform: str = paths.HOST_PLATFO
 
 def _image_files(m: Machine):
     for i, d in enumerate(m.drives):
-        if d:
+        if d and not is_host_drive(d.file):
             yield slot_name(i), d.file
 
 
@@ -807,5 +817,5 @@ def _repoint_images(m: Machine, moved: list[tuple[Path, Path]]) -> None:
         return p
 
     for d in m.drives:
-        if d:
+        if d and not is_host_drive(d.file):
             d.file = fixed(d.file)
