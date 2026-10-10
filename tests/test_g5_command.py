@@ -345,7 +345,7 @@ class Drives(unittest.TestCase):
 class Options(unittest.TestCase):
 
     def test_cpus_and_memory_limits(self):
-        for smp, ok in ((1, True), (2, True), (4, True), (5, False), (0, False)):
+        for smp, ok in ((1, True), (2, True), (4, True), (8, True), (32, True), (33, False), (0, False)):
             errors, _ = model.validate(plain(smp=smp), None, "darwin", check_files=False)
             self.assertEqual(errors == [], ok, smp)
         for ram, ok in ((2048, True), (8192, True), (16384, True), (16385, False), (128, False)):
