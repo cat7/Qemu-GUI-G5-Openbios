@@ -480,6 +480,14 @@ class MachineEditor(tk.Toplevel):
         ttk.Checkbutton(f, text="CD audio out (audio discs play through the sound interface)",
                         variable=self.cd_audio_var).grid(row=16, column=0, columnspan=3,
                                                          sticky="w")
+        ttk.Separator(f).grid(row=17, column=0, columnspan=3, sticky="ew", pady=10)
+        ttk.Label(f, text="MIDI", font=("", 0, "bold")).grid(
+            row=18, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        ttk.Label(f, text="In the guest: Audio MIDI Setup > Network, host 10.0.2.2, port 5004.",
+                  foreground=GREY).grid(row=19, column=0, columnspan=3, sticky="w")
+        ttk.Label(f, text=("On this PC: an rtpMIDI session." if paths.is_windows(paths.HOST_PLATFORM)
+                           else "On this Mac: an RTP session in Audio MIDI Setup."),
+                  foreground=GREY).grid(row=20, column=0, columnspan=3, sticky="w")
 
     def _net_mode_changed(self, _e=None):
         mode = model.network_mode_by_label(self.net_mode.get())
