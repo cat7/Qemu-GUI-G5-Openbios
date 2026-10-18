@@ -21,6 +21,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from qemugui import g5_model as model              # noqa: E402
 from qemugui import g5_share as share               # noqa: E402
+from qemugui import g5_command as command           # noqa: E402
 from qemugui.g5_model import Machine, Share, Network  # noqa: E402
 
 FIXTURES = HERE / "fixtures"
@@ -48,7 +49,8 @@ class ShareRecord(unittest.TestCase):
         m.share = Share("/shared/folder", "mac", "secret", "all-interfaces")
         d = json.loads(m.to_json())
         self.assertEqual(d["share"], {"folder": "/shared/folder", "user": "mac",
-                                      "password": "secret", "scope": "all-interfaces"})
+                                      "password": "secret", "scope": "all-interfaces",
+                                      "ftp": False, "volume": False, "volume_name": "Host"})
         self.assertEqual(Machine.from_json(m.to_json()), m)
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "machine.json"
@@ -57,7 +59,7 @@ class ShareRecord(unittest.TestCase):
 
     def test_a_bare_share_block_fills_in_the_defaults(self):
         m = Machine.from_dict({"name": "x", "share": {"folder": "/f"}})
-        self.assertEqual(m.share, Share("/f", "guest", "", "guest-only"))
+        self.assertEqual(m.share, Share("/f", "guest", "", "guest-only", ftp=True))
         self.assertTrue(m.share.enabled)
         self.assertEqual(Machine.from_dict({"name": "x", "share": "junk"}).share, Share())
 
@@ -66,6 +68,7 @@ class ShareChecks(unittest.TestCase):
 
     def machine(self, **kw) -> Machine:
         m = Machine.load(FIXTURES / "g5-rv100.json")
+        kw.setdefault("ftp", True)
         m.share = Share(**kw)
         return m
 
@@ -115,6 +118,72 @@ class ShareChecks(unittest.TestCase):
             m.share = Share(td, "u", "p", "all-interfaces")
             _, warnings = self.validate(m)
             self.assertFalse(any("slirp" in w for w in warnings), warnings)
+
+
+class MacOsXVolume(unittest.TestCase):
+    """The shared folder as a virtio-9p volume for osx9p."""
+
+    QD = "/Applications/qemu-system-ppc64-G5-openbios"
+
+    def machine(self, **share):
+        m = Machine.load(FIXTURES / "g5-rv100.json")
+        m.share = Share("/shared/folder", **share)
+        return m
+
+    def test_nothing_is_ticked_by_default(self):
+        self.assertFalse(Share().ftp)
+        self.assertFalse(Share().volume)
+        sh = Machine.from_dict({"name": "x", "share": {"folder": ""}}).share
+        self.assertFalse(sh.ftp)
+        self.assertFalse(sh.volume)
+
+    def test_an_old_share_block_keeps_ftp_and_has_no_volume(self):
+        sh = Machine.from_dict({"name": "x", "share": {"folder": "/f"}}).share
+        self.assertTrue(sh.ftp_on)
+        self.assertFalse(sh.volume_on)
+
+    def test_volume_round_trips(self):
+        m = self.machine(ftp=False, volume=True, volume_name="Shared")
+        self.assertEqual(Machine.from_json(m.to_json()).share, m.share)
+
+    def test_no_volume_no_9p(self):
+        argv = command.build_argv(self.machine(), self.QD, "/m", "darwin")
+        self.assertFalse(any("virtio-9p" in t or "fsdev" in t for t in argv))
+
+    def test_volume_adds_fsdev_and_card_without_a_loader(self):
+        argv = command.build_argv(self.machine(volume=True, volume_name="My, Disk"),
+                                  self.QD, "/m", "darwin")
+        self.assertEqual(argv[argv.index("-fsdev") + 1],
+                         "local,id=hostshare,path=/shared/folder,"
+                         "security_model=none,macos_compat=on")
+        self.assertIn("virtio-9p-pci,bus=pcix1,addr=0x2,fsdev=hostshare,"
+                      "mount_tag=My,, Disk", argv)
+        self.assertFalse(any("loader" in t or "boot-command" in t for t in argv))
+
+    def test_ftp_off_skips_its_checks(self):
+        with tempfile.TemporaryDirectory() as td:
+            m = self.machine(user="", ftp=False, volume=True)
+            m.share.folder = td
+            errors, _ = model.validate(m, None, "darwin", check_files=False)
+        self.assertFalse(m.share.ftp_on)
+        self.assertFalse(any("user name" in e for e in errors), errors)
+
+    def test_neither_ftp_nor_volume_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            m = self.machine()
+            m.share.folder = td
+            errors, warnings = model.validate(m, None, "darwin", check_files=False)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("neither" in w for w in warnings), warnings)
+
+    def test_volume_name_is_a_folder_name_in_volumes(self):
+        with tempfile.TemporaryDirectory() as td:
+            for name, ok in (("Host", True), ("x" * 27, True), ("x" * 28, False),
+                             ("a:b", False), ("a/b", False), ("", False)):
+                m = self.machine(volume=True, volume_name=name)
+                m.share.folder = td
+                errors, _ = model.validate(m, None, "darwin", check_files=False)
+                self.assertEqual(not any("volume name" in e for e in errors), ok, name)
 
 
 class GuestUrl(unittest.TestCase):

@@ -7,6 +7,8 @@ Pure: no Tk, no filesystem access beyond string handling. See
 
 from __future__ import annotations
 
+import os
+
 from . import paths
 from .paths import (qopt, split_extra_args, group_options, bat_quote, drive_format,
                     SUDO_KEEPALIVE)  # re-exported
@@ -63,6 +65,20 @@ def cd_audiodev_id(m: Machine, extra: list[str]) -> str:
 
 def _usb_audio_added(m: Machine, extra: list[str]) -> bool:
     return m.usb_audio and not any(t.split(",")[0] == "usb-audio" for t in extra)
+
+
+NINEP_FSDEV = "hostshare"
+# a PCI-X slot: on the HyperTransport bus the card gets no interrupt
+NINEP_SLOT = "bus=pcix1,addr=0x2"
+
+
+def ninep_args(m: Machine) -> list[str]:
+    """The shared folder as a Mac OS X volume; the guest needs osx9p."""
+    folder = os.path.expanduser(m.share.folder.strip())
+    return ["-fsdev", f"local,id={NINEP_FSDEV},path={qopt(folder)},"
+                      "security_model=none,macos_compat=on",
+            "-device", f"virtio-9p-pci,{NINEP_SLOT},fsdev={NINEP_FSDEV},"
+                       f"mount_tag={qopt(m.share.volume_name.strip())}"]
 
 
 def prom_env_tokens(m: Machine) -> list[str]:
@@ -152,6 +168,8 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     if m.usb_tablet:
         argv += ["-device", "usb-tablet"]
 
+    if m.share.volume_on:
+        argv += ninep_args(m)
     argv += ["-nic", nic_option(m.network)]
     argv += drive_tokens(m, machine_dir, platform)
     argv += prom_env_tokens(m)

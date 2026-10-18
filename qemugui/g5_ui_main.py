@@ -79,7 +79,7 @@ def start_in_terminal(m: Machine, machine_dir: Path) -> tuple[Path, share.ShareS
     machine_dir = Path(machine_dir)
     machine_dir.mkdir(parents=True, exist_ok=True)
     launcher, _argv = command.write_launcher(m, qemu_dir(), str(machine_dir))
-    share_server = share.start_share(m) if m.share.enabled else None
+    share_server = share.start_share(m) if m.share.ftp_on else None
     try:
         subprocess.Popen(["open", "-a", "Terminal", str(launcher)], cwd=str(machine_dir))
     except OSError:
@@ -115,7 +115,7 @@ def start_machine(m: Machine, machine_dir: Path) -> RunningMachine:
     # there instead of into a file nobody is looking at.
     log_fh = None if windows else open(log_path, "a", encoding="utf-8")
     share_server = None
-    if m.share.enabled:
+    if m.share.ftp_on:
         try:
             share_server = share.start_share(m, log_path)
         except share.ShareError:

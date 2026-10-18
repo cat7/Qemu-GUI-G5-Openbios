@@ -20,10 +20,17 @@ ROMs (`*.rom`) are picked from that folder.
 
 ## Shared folder
 
-Each machine can share one host folder over FTP while it runs. With the
-default (slirp) network the Mac reaches it at `ftp://10.0.2.2/` (`:2121`
-when port 21 is taken); with vmnet choose "All interfaces", set a
-password, and use the host's own address.
+Each machine can share one host folder while it runs, over FTP, as a
+volume, or both (neither is on until ticked).
+
+"Serve over FTP": with the default (slirp) network the Mac reaches it at
+`ftp://10.0.2.2/` (`:2121` when port 21 is taken); with vmnet choose "All
+interfaces", set a password, and use the host's own address.
+
+"Mac OS X volume (virtio-9p)" attaches the folder through a virtio-9p
+card, for Mac OS X 10.4 and 10.5 with osx9p installed (its CD image is
+built from github.com/cat7/osx9p). The folder appears in the Finder under
+the volume name, with file types and resource forks kept.
 
 ## Host USB devices (macOS)
 
