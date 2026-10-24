@@ -740,3 +740,23 @@ class PortForwarding(unittest.TestCase):
         for plat in ("darwin", "win32"):
             self.assertFalse(any("1024" in w for w in
                                  self.check([HostFwd("tcp", "80", "80")], plat)[1]))
+
+
+class DecrCapTests(unittest.TestCase):
+    def test_off_by_default(self):
+        argv = argv_of(plain())
+        self.assertIn("mac99,via=pmu", argv)
+        self.assertFalse(any("decr-cap-ms" in a for a in argv))
+
+    def test_on_adds_machine_property(self):
+        argv = argv_of(plain(smp=8, decr_cap_ms=100))
+        self.assertIn("mac99,via=pmu,decr-cap-ms=100", argv)
+
+    def test_round_trip(self):
+        m = Machine.from_dict(plain(decr_cap_ms=100).to_dict())
+        self.assertEqual(m.decr_cap_ms, 100)
+        self.assertEqual(Machine.from_dict({"name": "t"}).decr_cap_ms, 0)
+
+    def test_negative_is_an_error(self):
+        errors, _ = model.validate(plain(decr_cap_ms=-1), "darwin")
+        self.assertTrue(errors)

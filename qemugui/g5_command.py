@@ -137,7 +137,10 @@ def build_argv(m: Machine, qemu_dir: str, machine_dir: str,
     argv: list[str] = [paths.join_path(qd, paths.qemu_binary_name(platform), platform)]
 
     argv += ["-L", _path(PC_BIOS_DIR, qd, platform)]
-    argv += ["-M", model.MACHINE_TYPE, "-cpu", model.CPU_TYPE]
+    mtype = model.MACHINE_TYPE
+    if m.decr_cap_ms > 0:
+        mtype += f",decr-cap-ms={int(m.decr_cap_ms)}"
+    argv += ["-M", mtype, "-cpu", model.CPU_TYPE]
     argv += ["-bios", _path(m.bios or model.FIRMWARE_FILE, qd, platform)]
     argv += ["-smp", str(int(m.smp))]
     if m.vnc.strip():
