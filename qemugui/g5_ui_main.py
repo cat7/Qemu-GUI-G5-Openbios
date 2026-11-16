@@ -20,6 +20,7 @@ from .paths import Settings
 from .g5_ui_dialogs import (ask_name, confirm_delete, confirm_reset_saved_settings, open_folder,
                                refresh_native_style)
 from .g5_ui_machine import MachineEditor
+from .g5_ui_usb import UsbDevicesDialog
 
 APP_TITLE = paths.APP_NAME
 LOG_NAME = "last-run.log"
@@ -95,7 +96,8 @@ def usb_owned(m: Machine) -> tuple[set | None, str]:
     if not paths.is_windows(paths.HOST_PLATFORM) or not m.usb_host_devices:
         return None, ""
     owned, why = winusb.owned_ids()
-    return owned, winusb.passthrough_note([u.id for u in m.usb_host_devices], owned, why)
+    return owned, winusb.passthrough_note([u.id for u in m.usb_host_devices], owned, why,
+                                          {u.id: u.name for u in m.usb_host_devices})
 
 
 def start_machine(m: Machine, machine_dir: Path) -> RunningMachine:
@@ -164,6 +166,8 @@ class MainWindow(tk.Tk):
         filem = tk.Menu(menubar, tearoff=0)
         filem.add_command(label="New machine…", command=self.new_machine)
         filem.add_command(label="Open the Machines folder", command=self.open_machines_folder)
+        if paths.is_windows(paths.HOST_PLATFORM):
+            filem.add_command(label="USB devices…", command=self.usb_devices)
         filem.add_separator()
         filem.add_command(label="Quit", command=self._quit)
         menubar.add_cascade(label="File", menu=filem)
@@ -192,6 +196,8 @@ class MainWindow(tk.Tk):
                ("Delete", self.delete_machine, True),
                ("Open machine folder", self.open_machine_folder, True),
                ("Reset NVRAM", self.reset_nvram, True)]
+        if paths.is_windows(paths.HOST_PLATFORM):
+            spec.append(("USB devices…", self.usb_devices, False))
         self.machine_buttons: list[ttk.Button] = []
         for i, (label, cmd, needs_machine) in enumerate(spec):
             button = ttk.Button(btns, text=label, command=cmd)
@@ -415,6 +421,20 @@ class MainWindow(tk.Tk):
         except OSError as e:
             messagebox.showerror(APP_TITLE, f"The start-up file could not be written.\n\n{e}")
 
+    def usb_devices(self) -> UsbDevicesDialog:
+        """Which host devices QEMU may use: a setting of this computer."""
+        return UsbDevicesDialog(self, on_change=self.usb_ownership_changed)
+
+    def usb_ownership_changed(self):
+        """The preview, the open editors' device lists and run.bat follow."""
+        for w in self.winfo_children():
+            if isinstance(w, MachineEditor):
+                w.refresh_usb_host()
+        m = self.selected_machine()
+        if m is not None and not (m.name in self.running and self.running[m.name].poll() is None):
+            self._write_launcher(m)
+        self.refresh_details()
+
     def reset_nvram(self):
         """Deletes the machine folder's nvram.img, which QEMU keeps there;
         the next start makes a fresh one."""
@@ -456,6 +476,7 @@ class MainWindow(tk.Tk):
             return None
         errors, _warnings = model.validate(m, qemu_dir(), machine_dir=str(self.library.folder(m.name)))
         errors += model.start_blockers(m)
+        errors += self.library.usb_conflicts(m)
         if errors:
             messagebox.showerror("Start", "\n".join(f"• {e}" for e in errors))
             return None

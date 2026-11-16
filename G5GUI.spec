@@ -24,7 +24,7 @@ a = Analysis(
     ['g5_gui.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('qemugui/usb_ids.gz', 'qemugui')],
     hiddenimports=['tkinter', 'tkinter.ttk', 'tkinter.filedialog',
                    'tkinter.messagebox', 'tkinter.simpledialog',
                    'pyftpdlib', 'pyftpdlib.authorizers', 'pyftpdlib.handlers',

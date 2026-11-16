@@ -767,11 +767,25 @@ class Library:
     def has_record(self, name: str) -> bool:
         return self.json_path(name).is_file()
 
+    def usb_conflicts(self, m: Machine) -> list[str]:
+        """The host devices of *m* another machine also passes through."""
+        out = []
+        mine = {u.id: u for u in m.usb_host_devices}
+        for other in self.load_all():
+            if other.name == m.name:
+                continue
+            for u in other.usb_host_devices:
+                if u.id in mine:
+                    out.append(f"{mine[u.id].name or u.id} ({u.id}) is also passed through "
+                               f"by “{other.name}”: untick it in one of the two machines.")
+        return out
+
     def duplicate(self, name: str, new_name: str) -> Machine:
         if self.exists(new_name):
             raise FileExistsError(f"A machine called '{new_name}' already exists.")
         m = self.load(name)
         m.name = new_name
+        m.usb_host_devices = []      # a host device goes to one machine only
         self.save(m)
         for f in SAVED_SETTINGS_FILES:
             src = self.folder(name) / f

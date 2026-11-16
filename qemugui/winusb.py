@@ -13,13 +13,17 @@ No Tk in here.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths
+from . import usbnames
 
 HELPER = "winusb-switch.exe"
 
@@ -32,9 +36,10 @@ CREATE_NO_WINDOW = 0x08000000
 
 ID_RE = re.compile(r"^[0-9a-f]{4}:[0-9a-f]{4}$")
 
-WINUSB_STATE = "WinUSB (ready for QEMU)"
-WINDOWS_STATE = "Windows driver"
-NOT_READY_NOTE = "not passed through: owned by Windows"
+WINUSB_STATE = "given to QEMU"
+WINDOWS_STATE = "used by Windows"
+NOT_READY_NOTE = ("not passed through while Windows uses it: give it to QEMU with "
+                  "USB devices… in the main window")
 
 
 @dataclass
@@ -61,14 +66,18 @@ class WinDevice:
         return self.product or self.description or f"USB device {self.id}"
 
     @property
+    def display(self) -> str:
+        """Maker, model and kind, for the lists."""
+        return usbnames.describe(self.id, self.product or self.description,
+                                 usbnames.windows_kinds(self.functions, self.cls, self.service))
+
+    @property
     def switchable(self) -> bool:
         return not self.refuse
 
     @property
     def state(self) -> str:
-        if self.winusb:
-            return WINUSB_STATE
-        return f"{WINDOWS_STATE} ({self.service})" if self.service else WINDOWS_STATE
+        return WINUSB_STATE if self.winusb else WINDOWS_STATE
 
 
 class DeviceList(list):
@@ -77,9 +86,45 @@ class DeviceList(list):
     warnings: list = []
 
 
+_DEV_FILTER_RE = re.compile(r"^([0-9a-f]{4}:[0-9a-f]{4}) (?:upper|lower) filter (\S+) installed$")
+_CLASS_FILTER_RE = re.compile(r"^USB class (?:upper|lower) filter (\S+) installed$")
+_PACKAGE_RE = re.compile(r"^([0-9a-f]{4}:[0-9a-f]{4}): driver package (\S+) installs (\S+)$")
+
+
+def explain_warnings(devices) -> tuple[list[str], dict[str, list[str]]]:
+    """The list's warnings in plain words: (for the whole computer, per
+    device id). Device notes are kept only for listed devices."""
+    general: list[str] = []
+    per_device: dict[str, list[str]] = {}
+    for w in getattr(devices, "warnings", []) or []:
+        w = str(w)
+        m = _DEV_FILTER_RE.match(w)
+        if m:
+            per_device.setdefault(m.group(1), []).append(
+                f"Windows loads the extra driver {m.group(2)} with this device; "
+                "giving it to QEMU may not work while that driver is there.")
+            continue
+        m = _PACKAGE_RE.match(w)
+        if m:
+            per_device.setdefault(m.group(1), []).append(
+                f"A {m.group(3)} driver ({m.group(2)}) is installed for this device; "
+                "Windows may pick it instead of its own driver when the device is given back.")
+            continue
+        m = _CLASS_FILTER_RE.match(w)
+        if m:
+            general.append(f"The driver {m.group(1)} sits under every USB device of this "
+                           "computer; it can keep QEMU from opening a device given to it.")
+        elif w.startswith("UsbDk"):
+            general.append("UsbDk is installed (it comes with virt-viewer and similar tools); "
+                           "a device given back to Windows may not get its Windows driver back.")
+        else:
+            general.append(w)
+    return general, per_device
+
+
 def warnings_text(devices) -> str:
-    """The list's warnings in one line, "" if none."""
-    return "; ".join(str(w) for w in getattr(devices, "warnings", []) or [])
+    """The warnings for the whole computer, one per line; "" if none."""
+    return "\n".join(explain_warnings(devices)[0])
 
 
 def _obj(line: str) -> dict:
@@ -175,8 +220,10 @@ def owned_ids(folder: Path | str | None = None) -> tuple[set[str] | None, str]:
     return {d.id for d in devices if d.winusb}, ""
 
 
-def passthrough_note(chosen: list[str], owned: set[str] | None, why: str) -> str:
-    """What the launcher leaves out of the ticked devices, and why; "" if none."""
+def passthrough_note(chosen: list[str], owned: set[str] | None, why: str,
+                     names: dict | None = None) -> str:
+    """What the launcher leaves out of the ticked devices, and why; "" if none.
+    *names*: the saved name of each id."""
     if not chosen:
         return ""
     if owned is None:
@@ -184,8 +231,9 @@ def passthrough_note(chosen: list[str], owned: set[str] | None, why: str) -> str
     left = [i for i in chosen if i not in owned]
     if not left:
         return ""
-    return ("Not passed through, owned by Windows (Give to QEMU first): "
-            + ", ".join(left))
+    return ("Not passed through while Windows uses them (USB devices… > Give to QEMU): "
+            + ", ".join(f"{usbnames.describe(i, (names or {}).get(i, ''))} ({i})"
+                        for i in left))
 
 
 def shell_execute_runas(exe: str, params: str) -> int | None:
@@ -245,40 +293,90 @@ def run_elevated(op: str, dev_id: str, folder: Path | str | None = None) -> dict
     exe = helper_path(folder)
     if not exe.is_file():
         return {"op": op, "id": dev_id, "ok": False, "error": missing_message()}
-    with tempfile.TemporaryDirectory() as td:
-        out = Path(td) / "result.json"
+    td = result_dir()
+    try:
+        out = td / "result.json"
         try:
             code = shell_execute_runas(str(exe), f'{op} {dev_id} --out "{out}"')
         except OSError as e:
             return {"op": op, "id": dev_id, "ok": False, "error": str(e)}
         if code is None:
             return {"op": op, "id": dev_id, "ok": False, "cancelled": True}
-        try:
-            res = parse_result(out.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            res = {"op": op, "id": dev_id, "ok": False,
-                   "error": f"{HELPER} gave no result (exit code {code})"}
+        res, why = _read_result(out)
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+    if res is None:
+        res = _result_from_state(op, dev_id, folder, code, why)
     res["exit"] = code
     return res
+
+
+def result_dir() -> Path:
+    """A folder for the elevated helper's result. Not tempfile's: since
+    Python 3.13 that one grants only SYSTEM, Administrators and the owner,
+    and a file the elevated helper writes is owned by Administrators, which
+    this unelevated program is then refused."""
+    base = Path(tempfile.gettempdir())
+    for _ in range(100):
+        d = base / f"winusb-switch-{os.getpid()}-{os.urandom(4).hex()}"
+        try:
+            os.mkdir(d)         # default mode: the ACL is inherited from TEMP
+            return d
+        except FileExistsError:
+            continue
+    raise OSError("no folder for the winusb-switch result")
+
+
+READ_TRIES, READ_PAUSE = 5, 0.1
+
+
+def _read_result(out: Path, tries: int | None = None, pause: float | None = None) -> tuple[dict | None, str]:
+    """The result file, retried a while: a virus scanner may still hold
+    the file just written."""
+    why = ""
+    tries = tries or READ_TRIES
+    pause = READ_PAUSE if pause is None else pause
+    for i in range(tries):
+        try:
+            return parse_result(out.read_text(encoding="utf-8-sig")), ""
+        except (OSError, ValueError) as e:
+            why = f"{type(e).__name__}: {e}"
+        if i + 1 < tries:
+            time.sleep(pause)
+    return None, why
+
+
+def _result_from_state(op: str, dev_id: str, folder, code: int, why: str) -> dict:
+    """No result file: what the device's driver now is decides."""
+    try:
+        devices, problem = list_devices(folder)
+    except ValueError as e:         # off Windows: no creationflags
+        devices, problem = [], str(e)
+    d = next((x for x in devices if x.id == dev_id), None)
+    if not problem and d is not None and d.winusb == (op == "bind"):
+        return {"op": op, "id": dev_id, "ok": True, "status": "done", "unreported": why}
+    return {"op": op, "id": dev_id, "ok": False,
+            "error": f"{HELPER} left no report (exit code {code}; {why})"}
 
 
 def outcome_text(res: dict) -> str:
     """One line for the editor, from a run_elevated result."""
     if res.get("cancelled"):
-        return "Nothing changed: the administrator prompt was cancelled."
+        return "Nothing changed: the Windows permission prompt was cancelled."
     if res.get("refuse") == "in use" or res.get("exit") == IN_USE:
-        return ("Nothing changed: the device is in use. Quit the program using it "
-                "(QEMU, Camera app) first.")
+        return ("Nothing changed: a program is using the device. Quit it (a running "
+                "machine, the Camera app) and try again.")
     if res.get("ok"):
         if res.get("status") == "pending_reboot":
-            return "Replug the device to finish."
+            return "Unplug the device and plug it in again to finish."
         if res.get("op") == "bind":
-            return ("Already on WinUSB, ready for QEMU." if res.get("already")
-                    else "Given to QEMU: the device is on WinUSB.")
-        service = res.get("service") or "its own driver"
-        return f"Given back to Windows ({service})."
+            return ("The device was already given to QEMU." if res.get("already")
+                    else "Given to QEMU: machines can now pass it through.")
+        return "Given back to Windows."
     if res.get("refuse"):
-        return f"Refused: {res['refuse']}."
+        return f"This device cannot be given to QEMU ({res['refuse']})."
     detail = res.get("detail") or {}
     msg = detail.get("message") if isinstance(detail, dict) else ""
-    return f"Failed: {res.get('error') or 'unknown error'}" + (f" ({msg})" if msg else "") + "."
+    what = "give the device to QEMU" if res.get("op") == "bind" else "give the device back"
+    return (f"Could not {what}: {res.get('error') or 'unknown error'}"
+            + (f" ({msg})" if msg else "") + ".")

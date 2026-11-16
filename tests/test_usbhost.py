@@ -273,7 +273,8 @@ class EditorTab(unittest.TestCase):
     def test_refused_devices_are_hidden_and_counted(self):
         ed = self.editor(Machine(name="t"))
         self.assertEqual(list(ed.usb_host_vars), ["0e8d:1887", "046d:0990"])
-        self.assertIn("USB device 046d:0990  (046d:0990, high speed)", self.text(ed, "046d:0990"))
+        self.assertIn("Logitech QuickCam Pro 9000 (camera, audio)  (046d:0990, high speed)",
+                      self.text(ed, "046d:0990"))
         self.assertTrue(ed.usb_hidden_label.cget("text").startswith("3 devices hidden ("))
         self.assertNotIn("disabled", ed.usb_host_boxes["0e8d:1887"].state())
 
@@ -299,7 +300,7 @@ class EditorTab(unittest.TestCase):
         m = Machine(name="t", usb_host_devices=[UsbHostDevice("046d:0990", "QuickCam", "high"),
                                                 UsbHostDevice("174c:55aa", "External Disk", "super")])
         ed = self.editor(m)
-        self.assertTrue(self.text(ed, "046d:0990").startswith("QuickCam  (046d:0990"))
+        self.assertTrue(self.text(ed, "046d:0990").startswith("Logitech QuickCam Pro 9000"))
         self.assertNotIn("174c:55aa", ed.usb_host_vars)
         self.assertEqual(ed.collect().usb_host_devices,
                          [UsbHostDevice("046d:0990", "QuickCam", "high")])
